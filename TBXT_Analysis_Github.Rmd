@@ -1,0 +1,2351 @@
+---
+title: "TBXT snRNA-seq and snATAC-seq Analysis"
+author: "Emily Bulger"
+date: '2024-02-20'
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+Corresponding data files can be found in GEO (GSE245998).
+
+#==================================================
+#Set Up
+#==================================================
+Set Working Directory 
+```{r}
+st=format(Sys.time(), "%Y-%m-%d") 
+proj = 'proj'
+wd = '/path/to/directory/'
+setwd(wd)
+``` 
+
+Load Libraries
+```{r}
+library(Seurat) 
+library(SeuratData)
+library(dplyr)
+library(Matrix)
+library(stringr)
+library(ggplot2)
+library(future)
+library(RColorBrewer)
+library(patchwork)
+library(MetBrewer) 
+library(EnhancedVolcano)
+library(glmGamPoi)
+library(ggrepel)
+library(GenomicRanges)
+library(data.table)
+library(CellChat)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(clustree)
+library(tidyr)
+library(reshape2)
+library(ArchR)
+library(parallel)
+library(chromVARmotifs)
+addArchRGenome("hg38")
+addArchRThreads(threads = 1)
+set.seed(1234)
+```
+
+Gene and Color Lists
+```{r}
+my_comparisons <- list(c("WT","TBXT-Het"), c('WT','TBXT-HET'), c('TBXT-Het','TBXT-KO'))
+
+gastruloid <- c('GABRP','VTCN1','HAND1','WNT6','ISL1','TFAP2A','GATA2','GATA3','TBX3','TP63','TEAD4','CDX2',"NANOG","POU5F1","SOX2","DPPA4","TDGF1",'OTX2',"NODAL","GDF3","KDR","TBXT","NKX1-2","SNAI1","GSC","MIXL1","EOMES","LHX1","DLL3","APLNR","MESP1","MESP2","HAS2","PDGFRA","GATA6",'FGF17',"FOXA2","SOX17","PRDM1","NANOS3","TFAP2C")
+
+darkgraygreenblue = c('#7E8987','#069C56','#0000F5')
+darkgraygreenblue2 = c('#7E8987','#069C56','#0000F5','#7E8987','#069C56','#0000F5')
+```
+
+
+#==================================================
+#Process Raw Data and generate merged Seurat Object
+#==================================================
+
+Load Raw Data from Cellranger
+```{r}
+eb01<- Read10X_h5(filename ="~/Cellranger Counts/EB01/outs/filtered_feature_bc_matrix.h5")
+eb02<- Read10X_h5(filename ="~/Cellranger Counts/EB02/outs/filtered_feature_bc_matrix.h5")
+eb03<- Read10X_h5(filename ="~/Cellranger Counts/EB03/outs/filtered_feature_bc_matrix.h5")
+eb06<- Read10X_h5(filename ="~/Cellranger Counts/EB06/outs/filtered_feature_bc_matrix.h5")
+eb07<- Read10X_h5(filename ="~/Cellranger Counts/EB07/outs/filtered_feature_bc_matrix.h5")
+eb08<- Read10X_h5(filename ="~/Cellranger Counts/EB08/outs/filtered_feature_bc_matrix.h5")
+```
+
+Create Seurat Objects
+```{r}
+eb01 <- CreateSeuratObject(counts = eb01$`Gene Expression`,  
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+eb02 <- CreateSeuratObject(counts = eb02$`Gene Expression`, 
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+
+eb03 <- CreateSeuratObject(counts = eb03$`Gene Expression`, 
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+
+eb06 <- CreateSeuratObject(counts = eb06$`Gene Expression`, 
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+
+eb07 <- CreateSeuratObject(counts = eb07$`Gene Expression`, 
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+
+eb08 <- CreateSeuratObject(counts = eb08$`Gene Expression`, 
+                           project = "TBXT-CDX2", 
+                           min.cells = 3, 
+                           min.features = 200,
+                           names.delim = "-", 
+                           names.field = 2)
+```
+
+Add Metadata (Genotype/Sample/Batch)
+```{r}
+eb01$Genotype = "WT"
+eb02$Genotype = "TBXT-KO"
+eb03$Genotype = "TBXT-Het"
+eb06$Genotype = "WT"
+eb07$Genotype = "TBXT-KO"
+eb08$Genotype = "TBXT-Het"
+
+eb01$Batch = "1"
+eb02$Batch = "1"
+eb03$Batch = "1"
+eb06$Batch = "2"
+eb07$Batch = "2"
+eb08$Batch = "2"
+
+eb01$Sample = "eb01"
+eb02$Sample = "eb02"
+eb03$Sample = "eb03"
+eb06$Sample = "eb06"
+eb07$Sample = "eb07"
+eb08$Sample = "eb08"
+
+eb01$SampleNames = "WT-1"
+eb02$SampleNames = "TBXT-KO-1"
+eb03$SampleNames = "TBXT-Het-1"
+eb06$SampleNames = "WT-2"
+eb07$SampleNames = "TBXT-KO-2"
+eb08$SampleNames = "TBXT-Het-2"
+```
+
+Calculate Mitochondial and Ribosomal content
+```{r}
+eb01 <- PercentageFeatureSet(eb01, "^MT-", col.name = "percent_mito")
+eb01 <- PercentageFeatureSet(eb01, "^RP[SL]", col.name = "percent_ribo")
+
+eb02 <- PercentageFeatureSet(eb02, "^MT-", col.name = "percent_mito")
+eb02 <- PercentageFeatureSet(eb02, "^RP[SL]", col.name = "percent_ribo")
+
+eb03 <- PercentageFeatureSet(eb03, "^MT-", col.name = "percent_mito")
+eb03 <- PercentageFeatureSet(eb03, "^RP[SL]", col.name = "percent_ribo")
+
+eb06 <- PercentageFeatureSet(eb06, "^MT-", col.name = "percent_mito")
+eb06 <- PercentageFeatureSet(eb06, "^RP[SL]", col.name = "percent_ribo")
+
+eb07 <- PercentageFeatureSet(eb07, "^MT-", col.name = "percent_mito")
+eb07 <- PercentageFeatureSet(eb07, "^RP[SL]", col.name = "percent_ribo")
+
+eb08 <- PercentageFeatureSet(eb08, "^MT-", col.name = "percent_mito")
+eb08 <- PercentageFeatureSet(eb08, "^RP[SL]", col.name = "percent_ribo")
+```
+
+Create merged Seurat Object with all samples
+```{r}
+tbxt_raw <- merge(eb01, c(eb02, eb03, eb06, eb07, eb08), 
+    add.cell.ids = c("eb01", "eb02", "eb03", "eb06", "eb07", "eb08"))
+
+#Housekeeping
+tbxt_raw$Genotype <- factor(tbxt_raw$Genotype, levels = c("WT", "TBXT-Het", "TBXT-KO"))
+tbxt_raw$SampleNames <- factor(tbxt_raw$SampleNames, levels = c("WT-1", "WT-2", "TBXT-Het-1","TBXT-Het-2", "TBXT-KO-1","TBXT-KO-2"))
+tbxt_raw$Sample <- factor(tbxt_raw$Sample, levels = c("eb01", "eb06", "eb02","eb07", "eb03","eb08"))
+```
+
+Violin Plot on QC Metrics
+```{r}
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo")
+
+VlnPlot(
+  tbxt_raw,
+  features = feats,
+  pt.size = 0.1,
+  ncol = 2,
+  group.by = "Sample"
+) +  NoLegend()
+
+ggsave(
+  paste(st, proj, "_Violin_QC_Raw.pdf", ".pdf", sep = ""),
+  width = 12,
+  height = 6
+)
+```
+
+FeatureScatter on QC Metrics
+```{r}
+FeatureScatter(tbxt_raw, feature1 = "percent_ribo", feature2 = "nCount_RNA", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_Ribo-nCount", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+FeatureScatter(tbxt_raw, feature1 = "percent_ribo", feature2 = "nFeature_RNA", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_Ribo-nFeature", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+FeatureScatter(tbxt_raw, feature1 = "percent_ribo", feature2 = "percent_mito", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_Ribo-Mito", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+FeatureScatter(tbxt_raw, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_nCount-nFeature", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+FeatureScatter(tbxt_raw, feature1 = "nCount_RNA", feature2 = "percent_mito", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_nCount-Mito", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+FeatureScatter(tbxt_raw, feature1 = "nFeature_RNA", feature2 = "percent_mito", group.by = "Sample")
+ggsave(
+  paste(st, proj, "_Scatter_nFeature-Mito", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+```
+
+Calculate Standard Deviation Cutoffs on QC Metrics to help guide QC cutoffs
+```{r}
+#eb01
+count.max <- round(mean(eb01$nCount_RNA) + 2 * sd(eb01$nCount_RNA), digits = -2) #16300
+count.min <- round(mean(eb01$nCount_RNA) - 2 * sd(eb01$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb01$nFeature_RNA) + 2 * sd(eb01$nFeature_RNA), digits = -2) #5600
+feat.min <- round(mean(eb01$nFeature_RNA) - 2 * sd(eb01$nFeature_RNA), digits = -2) #1100
+
+#eb02
+count.max <- round(mean(eb02$nCount_RNA) + 2 * sd(eb02$nCount_RNA), digits = -2) #24300
+count.min <- round(mean(eb02$nCount_RNA) - 2 * sd(eb02$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb02$nFeature_RNA) + 2 * sd(eb02$nFeature_RNA), digits = -2) #6500
+feat.min <- round(mean(eb02$nFeature_RNA) - 2 * sd(eb02$nFeature_RNA), digits = -2) #1600
+
+#eb03
+## Get filtering parameters
+count.max <- round(mean(eb03$nCount_RNA) + 2 * sd(eb03$nCount_RNA), digits = -2) #28100
+count.min <- round(mean(eb03$nCount_RNA) - 2 * sd(eb03$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb03$nFeature_RNA) + 2 * sd(eb03$nFeature_RNA), digits = -2) #7100
+feat.min <- round(mean(eb03$nFeature_RNA) - 2 * sd(eb03$nFeature_RNA), digits = -2) #1900
+
+#eb06
+## Get filtering parameters
+count.max <- round(mean(eb06$nCount_RNA) + 2 * sd(eb06$nCount_RNA), digits = -2) #18300
+count.min <- round(mean(eb06$nCount_RNA) - 2 * sd(eb06$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb06$nFeature_RNA) + 2 * sd(eb06$nFeature_RNA), digits = -2) #5700
+feat.min <- round(mean(eb06$nFeature_RNA) - 2 * sd(eb06$nFeature_RNA), digits = -2) #1500
+
+#eb07
+## Get filtering parameters
+count.max <- round(mean(eb07$nCount_RNA) + 2 * sd(eb07$nCount_RNA), digits = -2) #11700
+count.min <- round(mean(eb07$nCount_RNA) - 2 * sd(eb07$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb07$nFeature_RNA) + 2 * sd(eb07$nFeature_RNA), digits = -2) #4500
+feat.min <- round(mean(eb07$nFeature_RNA) - 2 * sd(eb07$nFeature_RNA), digits = -2) #0
+
+#eb08
+## Get filtering parameters
+count.max <- round(mean(eb08$nCount_RNA) + 2 * sd(eb08$nCount_RNA), digits = -2) #22200
+count.min <- round(mean(eb08$nCount_RNA) - 2 * sd(eb08$nCount_RNA), digits = -2) #0
+feat.max <- round(mean(eb08$nFeature_RNA) + 2 * sd(eb08$nFeature_RNA), digits = -2) #6300
+feat.min <- round(mean(eb08$nFeature_RNA) - 2 * sd(eb08$nFeature_RNA), digits = -2) #1600
+```
+
+Filter outliers based on violin plots and min/max SD cutoffs:
+```{r}
+filtered <- subset(tbxt_raw, subset =  
+                      nCount_RNA > 5000 & 
+                      nCount_RNA < 12500 & 
+                      percent_mito < 20 & 
+                      percent_mito > 5 & 
+                      percent_ribo < 15 & 
+                      percent_ribo > 3 & 
+                      nFeature_RNA < 4500 &
+                      nFeature_RNA > 2500
+                    )
+
+table(filtered$Genotype)
+# TBXT-Het  TBXT-KO       WT 
+#     6391     7534    11833 
+
+#Validate Filtration cutoffs by visualizing using violin plots
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo")
+VlnPlot(filtered,features = feats, pt.size = 0.1, ncol = 2, group.by = "Sample") +  NoLegend()
+ggsave(
+  paste(st, proj, "_Violin_QC_Filtered", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+```
+
+Validate Filtration cutoffs using FeatureScatter
+```{r}
+FeatureScatter(filtered, feature1 = "percent_ribo", feature2 = "nCount_RNA", group.by = "Sample")
+FeatureScatter(filtered, feature1 = "percent_ribo", feature2 = "nFeature_RNA", group.by = "Sample")
+FeatureScatter(filtered, feature1 = "percent_ribo", feature2 = "percent_mito", group.by = "Sample")
+FeatureScatter(filtered, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "Sample")
+FeatureScatter(filtered, feature1 = "nCount_RNA", feature2 = "percent_mito", group.by = "Sample")
+FeatureScatter(filtered, feature1 = "nFeature_RNA", feature2 = "percent_mito", group.by = "Sample")
+```
+
+Add cell cycle scores
+```{r}
+#Cell Cycle
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+filtered <- CellCycleScoring(filtered,
+                             s.features = s.genes,
+                             g2m.features = g2m.genes)
+filtered$CC.Difference <- filtered$S.Score - filtered$G2M.Score
+```
+
+Remove individual seurat objects to save memory. Use Merged Seurat object "filtered" instead.
+```{r}
+rm(eb01)
+rm(eb02)
+rm(eb03)
+rm(eb06)
+rm(eb07)
+rm(eb08)
+```
+
+Save Seurat Object
+```{r}
+save(filtered, file = "~/TBXT_Filtered.RData")
+load("~/TBXT_Filtered.RData")
+```
+
+#==================================================
+#scTransform v2, Integration, PCA, UMAP, Neighbors, Clusters, Cluster Labeling
+#==================================================
+
+Split Seurat object by batch
+```{r}
+seurat <- filtered
+tbxt.batch <- SplitObject(seurat, split.by = "Batch") 
+batch1<- tbxt.batch[["1"]]
+batch2 <- tbxt.batch[["2"]]
+```
+
+scTransform v2: 
+```{r}
+batch1 <-
+  SCTransform(
+    batch1,
+    vst.flavor = "v2",
+    verbose = TRUE,
+    vars.to.regress = c("S.Score", "G2M.Score", "percent_ribo")
+  ) %>%
+  RunPCA(npcs = 15, verbose = TRUE) %>%
+  RunUMAP(
+    reduction = "pca",
+    dims = 1:15,
+    verbose = TRUE,
+    umap.method = 'umap-learn',
+    metric = 'correlation'
+  ) %>%
+  FindNeighbors(reduction = "pca",
+                dims = 1:15,
+                verbose = TRUE) %>%
+  FindClusters(resolution = 0.7, verbose = TRUE) #12 communities
+
+	   
+DimPlot(batch1, label = T, repel = T) + ggtitle("Unsupervised clustering")
+ggsave(paste(st, proj, "-batch1_DimPlot_UnsupervisedClustering", ".pdf", sep = ""), width = 12, height = 12)
+
+
+batch2 <-
+  SCTransform(
+    batch2,
+    vst.flavor = "v2",
+    verbose = TRUE,
+    vars.to.regress = c("S.Score", "G2M.Score", "percent_ribo")
+  ) %>% 
+  RunPCA(npcs = 15, verbose = TRUE) 
+```
+
+Integration
+```{r}
+tbxt.list <- list(batch1 = batch1, batch2 = batch2)
+
+features <-
+  SelectIntegrationFeatures(object.list = tbxt.list, nfeatures = 3000)
+
+tbxt.list <-
+  PrepSCTIntegration(object.list = tbxt.list, anchor.features = features)
+
+tbxt.anchors <-
+  FindIntegrationAnchors(
+    object.list = tbxt.list,
+    normalization.method = "SCT",
+    anchor.features = features
+  )
+
+all_genes <- lapply(tbxt.list, row.names) %>% Reduce(intersect, .)
+
+seurat <-
+  IntegrateData(
+    anchorset = tbxt.anchors,
+    normalization.method = "SCT",
+    features.to.integrate = all_genes,
+    verbose = TRUE
+  ) 
+```
+
+PCA, UMAP, Neighbors
+```{r}
+seurat <- RunPCA(seurat, verbose = TRUE)
+
+seurat <-
+  RunUMAP(seurat,
+          reduction = "pca",
+          dims = 1:15,
+          verbose = TRUE)
+
+seurat <- FindNeighbors(seurat, reduction = "pca", dims = 1:15)
+```
+
+Calculate and plot UMAPs of clusters at various resolutions
+```{r}
+seurat <- FindClusters(seurat, resolution = 0.2) #6 clusters
+DimPlot(
+  seurat,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  shuffle = TRUE,
+  cols = met.brewer('Austria',11)
+) + theme(legend.position = "bottom")
+ggsave(
+  paste(st, proj, "_UMAP_Res0.2", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+
+seurat <- FindClusters(seurat, resolution = 0.3) #8 clusters
+DimPlot(
+  seurat,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  shuffle = TRUE,
+  cols = met.brewer('Austria', 11)
+) + theme(legend.position = "bottom")
+ggsave(
+  paste(st, proj, "_UMAP_Res0.3", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+
+#res 0.4
+seurat <- FindClusters(seurat, resolution = 0.4) #10 custers
+DimPlot(
+  seurat,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  shuffle = TRUE,
+  cols = met.brewer('Austria',11)
+) + theme(legend.position = "bottom")
+ggsave(
+  paste(st, proj, "_UMAP_Res0.35", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+
+seurat <- FindClusters(seurat, resolution = 0.6) #12 clusters
+DimPlot(
+  seurat,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  shuffle = TRUE,
+  cols = met.brewer('Austria',12)
+) + theme(legend.position = "bottom")
+ggsave(
+  paste(st, proj, "_UMAP_Res0.6", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+
+seurat <- FindClusters(seurat, resolution = 0.8) #16 clusters
+DimPlot(
+  seurat,
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  shuffle = TRUE,
+  cols = met.brewer('Austria',16)
+) + theme(legend.position = "bottom")
+ggsave(
+  paste(st, proj, "_UMAP_Res0.8", ".pdf", sep = ""),
+  width = 12,
+  height = 12
+) 
+```
+
+Fig. S3: Clustree analysis
+```{r}
+clustree(seurat)
+ggsave(paste(wd,st, proj, "_Clustree.pdf", sep = ""), width = 12, height = 12) 
+```
+
+Heatmap to help define cluster identities
+```{r}
+DoHeatmap(subset(seurat, downsample = 300), 
+          features = gastruloid, 
+          size = 3)
+ggsave(paste(st, proj, "_Heatmap_Gastruloid_Res04", ".pdf", sep = ""), width = 12, height = 6)
+```
+
+Label Clusters
+```{r}
+Idents(object = seurat) <- "seurat_clusters0.4" 
+seurat <- RenameIdents(object = seurat,
+                     '0' = 'Extraembryonic-1', 
+                     '1' = 'Primitive Streak-1', 
+                     '2' = 'Mesoderm',
+                     '3' = 'Primitive Streak-2', 
+                     '4' = 'Primitive Streak-3', 
+                     '5' = 'Epiblast',
+                     '6' = 'PGCLC', 
+                     '7' = 'Extraembryonic-3', 
+                     '8' = 'Extraembryonic Progenitors', 
+                     '9' = 'Endoderm',
+                     '10'= 'Extraembryonic-2' 
+                    )
+levels(seurat) <-c('Extraembryonic-1','Extraembryonic-2','Extraembryonic-3','Extraembryonic Progenitors',"Epiblast", "Primitive Streak-1", "Primitive Streak-2",'Primitive Streak-3','Mesoderm','Endoderm','PGCLC')
+seurat[["labeled_clusters"]] <- Idents(object = seurat)
+Idents(object = seurat) <- "labeled_clusters" 
+```
+
+#==================================================
+#ArchR QC and Doublet Removal
+#==================================================
+
+Import ATAC data and add to ArchR Project 
+```{r}
+inputFiles <- c('eb01'="~/EB01/outs/atac_fragments.tsv.gz", 
+                'eb02'="~/EB02/outs/atac_fragments.tsv.gz", 
+                'eb03'="~/EB03/outs/atac_fragments.tsv.gz", 
+                'eb06'="~/EB06/outs/atac_fragments.tsv.gz", 
+                'eb07'="~/EB07/outs/atac_fragments.tsv.gz", 
+                'eb08'="~/EB08/outs/atac_fragments.tsv.gz")
+```
+
+Create Arrow Files
+```{r}
+ArrowFiles <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  minTSS = 4, 
+  minFrags = 1000, 
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE, 
+  force = TRUE
+)
+ArrowFiles <- c('eb01.arrow', 'eb02.arrow','eb03.arrow','eb06.arrow','eb07.arrow','eb08.arrow')
+```
+
+Create ArchRProject
+```{r}
+archr <- ArchRProject(ArrowFiles) 
+```
+
+Import raw scRNA data and add to ArchR Project
+```{r}
+seRNA <-
+  import10xFeatureMatrix(
+    input = c(
+      '~/EB01/outs/filtered_feature_bc_matrix.h5',
+      "~/EB02/outs/filtered_feature_bc_matrix.h5",
+      "~/EB03/outs/filtered_feature_bc_matrix.h5",
+      "~/EB06/outs/filtered_feature_bc_matrix.h5",
+      "~/EB07/outs/filtered_feature_bc_matrix.h5",
+      "~/EB08/outs/filtered_feature_bc_matrix.h5"
+    ),
+    names = c('eb01', 'eb02', 'eb03', 'eb06', 'eb07', 'eb08')
+  )
+
+seRNAcombined<-cbind(assay(seRNA[[1]]), assay(seRNA[[2]]), assay(seRNA[[3]]), assay(seRNA[[4]]), assay(seRNA[[5]]), assay(seRNA[[6]]))
+seRNA2<-SummarizedExperiment(assays=list(counts=seRNAcombined), rowRanges= rowRanges(seRNA[[1]]))
+
+archr <-addGeneExpressionMatrix(input=archr, seRNA=seRNA2) 
+```
+
+SAVE ArchR Project
+```{r}
+archr <- saveArchRProject(ArchRProj = archr) 
+# class: ArchRProject 
+# outputDirectory: /path/to/directory
+# samples(6): eb01 eb02 ... eb07 eb08
+# sampleColData names(1): ArrowFiles
+# cellColData names(17): Sample TSSEnrichment ... Gex_MitoRatio Gex_RiboRatio
+# numberOfCells(1): 66955
+# medianTSS(1): 13.195
+# medianFrags(1): 11417
+```
+
+Add Genotype/Batch Metadata
+```{r}
+cellNames <- archr$cellNames
+
+Genotype <- gsub ("eb01|eb06", "WT", archr$Sample)
+Genotype <- gsub ("eb02|eb07", "TBXT-KO", Genotype)
+Genotype <- gsub ("eb03|eb08", "TBXT-Het", Genotype)
+
+archr <- addCellColData(ArchRProj = archr, data = paste0(Genotype),
+    cells = cellNames, name = "Genotype")
+
+Batch <- gsub ("eb01|eb02|eb03", "1", archr$Sample)
+Batch <- gsub ("eb06|eb07|eb08", "2", Batch)
+
+archr <- addCellColData(ArchRProj = archr, data = paste0(Batch),
+    cells = cellNames, name = "Batch")
+
+SampleNames <- gsub ("eb01", "WT-1", archr$Sample)
+SampleNames <- gsub ("eb06", "WT-2", SampleNames)
+SampleNames <- gsub ("eb02", "TBXT-KO-1", SampleNames)
+SampleNames <- gsub ("eb07", "TBXT-KO-2", SampleNames)
+SampleNames <- gsub ("eb03", "TBXT-Het-1", SampleNames)
+SampleNames <- gsub ("eb08", "TBXT-Het-2", SampleNames)
+
+archr <- addCellColData(ArchRProj = archr, data = paste0(SampleNames),
+    cells = cellNames, name = "SampleNames")
+```
+
+Reformat barcodes so ArchR and Seurat objects have same format
+```{r}
+clust.df <- as.data.frame(seRNA$labeled_clusters) 
+corrected_barcodes <- gsub("_","#",rownames(clust.df)) 
+rownames(clust.df) <- corrected_barcodes
+
+clust.df <- dplyr::rename(clust.df, 'labeled_clusters' = 'seRNA$labeled_clusters')
+nrow(clust.df) #25758
+```
+
+Transfer labels from Seurat Object to ArchR Project
+```{r}
+for (y in 1:ncol(clust.df)){
+  archr@cellColData[,colnames(clust.df)[y]] <- NA
+  for(x in 1:nrow(clust.df)) {
+    cellsToChange <- getCellNames(ArchRProj = archr)[which(as.character(archr$cellNames) == rownames(clust.df)[x])] 
+    archr@cellColData[cellsToChange,colnames(clust.df)[y]] <- clust.df[x,y]
+  }
+} 
+
+head(archr$labeled_clusters, n=1000)   #NAs will be present. These are cells filtered out of Seurat Object
+
+labeled_clusters <- as.character(archr$labeled_clusters)
+archr$labeled_clusters <- labeled_clusters
+```
+
+Remove cells filtered out in Seurat object
+```{r}
+keep <- BiocGenerics::which(archr$labeled_clusters %in% c("1", "2",'3','4','5','6','7','8','9','10','11'))
+cellskeep <- archr$cellNames[keep]
+archr <- archr[cellskeep, ]
+```
+
+Transfer cluster labels from Seurat Object to ArchR Project
+```{r}
+#note these numbers are not the same as seurat cluster numbers. They are in order of labeled_clusters labels
+bioNames <- gsub("10","Endoderm",  archr$labeled_clusters)
+bioNames <- gsub("2","Extraembryonic-2",bioNames)
+bioNames <- gsub("11","PGCLC",bioNames) 
+bioNames <- gsub("1","Extraembryonic-1",bioNames)
+bioNames <- gsub("3","Extraembryonic-3", bioNames) 
+bioNames <- gsub("4","Extraembryonic Progenitors",bioNames)
+bioNames <- gsub("5","Epiblast",bioNames)
+bioNames <- gsub("6","Primitive Streak-2",bioNames)
+bioNames <- gsub("7","Primitive Streak-1",bioNames)
+bioNames <- gsub("8","Primitive Streak-3",bioNames)
+bioNames <- gsub("9","Mesoderm",bioNames) 
+
+head(bioNames, n=100)
+
+archr$labeled_clusters <- bioNames
+getCellColData(archr)
+```
+
+UMAPs and Feature plots of QC variables 
+```{r}
+p1 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "Gex_MitoRatio",
+    plotAs = "violin")
+p2 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "Gex_RiboRatio",
+    plotAs = "violin")
+p3 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "Gex_nGenes",
+    plotAs = "violin")
+p4 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "Gex_nUMI",
+    plotAs = "violin")
+p5 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "nFrags",
+    plotAs = "violin")
+p6 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "SampleNames", 
+    colorBy = "cellColData", 
+    name = "TSSEnrichment",
+    plotAs = "violin")
+
+plotPDF(p1,p2,p3,p4, p5, p6, name = paste(st, proj, "Violin_QC.pdf", sep = ""), ArchRProj = archr, addDOC = FALSE, width = 6, height = 6)
+```
+
+Doublet Filtration
+```{r}
+archr <- addDoubletScores(archr)  
+archr <- filterDoublets(archr)
+# Filtering 893 cells from ArchRProject!
+# 	eb01 : 285 of 5341 (5.3%)
+# 	eb02 : 118 of 3436 (3.4%)
+# 	eb03 : 40 of 2022 (2%)
+# 	eb06 : 287 of 5359 (5.4%)
+# 	eb07 : 0 of 3636 (0%)
+# 	eb08 : 163 of 4044 (4%)
+```
+
+Removing cells from seurat object that were filtered in ArchR project by doublet removal
+```{r}
+archr_names <- gsub("#", "_", archr$cellNames)
+overlap <- intersect(archr_names, seurat@assays$RNA@data@Dimnames[[2]])
+seurat <- subset(seurat, cells = overlap)
+```
+
+#==================================================
+#Seurat Analysis - All clusters
+#==================================================
+
+FindAllMarkers Comparing Clusters (Res 0.4)
+```{r}
+Idents(seurat) <- "labeled_clusters"
+seurat <- PrepSCTFindMarkers(seurat, verbose = TRUE)
+
+#By Cluster
+markers <- FindAllMarkers(seurat, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+write.csv(markers, paste(wd, st, proj,"_FindAllMarkers_Res4.csv", sep = "")) 
+
+#By Genotype
+Idents(seurat) <- "Genotype"
+  markers <- FindAllMarkers(seurat, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+  write.csv(markers, paste(st, proj, "_FindAllMarkers_Genotype.csv", sep = ""))
+```
+
+Fig. 2B: Stacked Barplot of the proportion of cells from each sample assigned to each cluster
+```{r}
+pt <- table(seurat$labeled_clusters, seurat$SampleNames)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+pt <- as.data.frame(pt)
+write.csv(pt,"pt.csv") #calculated percents in excel
+pt<-read.csv("pt.csv")
+
+
+pt$Var1 <- factor(pt$Var1,levels = c('Extraembryonic-1','Extraembryonic-2','Extraembryonic-3', "Extraembryonic Progenitors","Epiblast", "Primitive Streak-1", "Primitive Streak-2",'Primitive Streak-3','Mesoderm','Endoderm','PGCLC'))
+pt$SampleNames <- factor(pt$SampleNames,levels = c('TBXT-KO-2','TBXT-KO-1','TBXT-Het-2','TBXT-Het-1',"WT-2",'WT-1'))
+
+
+ggplot(pt, aes(x = SampleNames, y = decimal, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0, hjust=.5))+
+  geom_col(position = "fill", width = .6) +
+  xlab("") +
+  ylab("Percent") +
+  scale_fill_manual(values =met.brewer('Austria', 10))+
+  scale_y_continuous(labels = scales::percent)+
+  coord_flip() +
+  theme(
+    plot.title = element_text(size=20,vjust=1,hjust=0.5,color="black",face="bold"),
+    axis.text.y = element_text(size=20,color="black", vjust = 0.65),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_text(size=20,color="black", face="bold",margin = margin(t = 10)),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_text(size=20,color="black", angle=0, vjust=0.65),
+    axis.title.x = element_text(size=20,color="black", face="bold",  margin = margin(t = 10)),
+    panel.grid = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    rect = element_blank()
+  ) 
+ggsave(paste(wd, st, proj, "_BarGraph_ClusterBySample_LabeledClusters_Stacked", ".pdf", sep = ""), width = 12, height = 6)
+```
+
+Fig. 2D: Heatmap - Gastrulation Markers
+```{r}
+Idents(object = seurat) <- "labeled_clusters" 
+DoHeatmap(seurat, 
+          features = gastruloid, 
+          size = 3,
+          group.colors = met.brewer('Austria', 11))
+ggsave(paste(wd,st, proj, "_Heatmap_Gastruloid_Res04_LabeledClusters", ".pdf", sep = ""), width = 12, height = 8)
+```
+
+Fig. S4: Amion markers from Rostovskaya 2022 
+```{r}
+Idents(seurat) <- 'labeled_clusters'
+seurat.exe <- subset(seurat, idents = c('Extraembryonic-1','Extraembryonic-2','Extraembryonic-3', 'Extraembryonic Progenitors','Epiblast'))
+
+rostovskaya <- c('GABRP','HEY1','HAND1','VTCN1','TPM1','IGFBP3','ANKS1A',
+                        'FABP5','S100A6','S100A16','LRP2','CITED4','TEAD4','SNX2','WNT6',
+                        'SDC1','CGA','TBX3','ERVV-1','SP6','MUC15','LYN','GADD45G')
+
+DoHeatmap(seurat.exe, 
+          features = rostovskaya, 
+          size = 3)
+ggsave(paste(st, proj, "_Heatmap_ExE_Rostovskaya", ".pdf", sep = ""), width =12, height = 6)
+```
+
+Fig. 3A': Violin plot of TBXT across clusters
+```{r}
+VlnPlot(seurat,features = "TBXT", pt.size = , assay = "SCT", cols = met.brewer('Austria', 11), group.by = "labeled_clusters") 
+ggsave(paste(wd,st, proj, "_ViolinPlots_byCluster_TBXT.pdf", sep = ""), width = 12, height = 12)
+```
+
+Calculate Pairwise markers between genotypes for each cluster
+```{r}
+Idents(seurat) <- 'seurat_clusters0.4'
+seurat$cluster.Genotype <- paste(Idents(seurat), seurat$Genotype, sep = "_")
+Idents(seurat) <- "cluster.Genotype"
+
+for (i in 0:11) {
+  try({
+    ident1 <- paste0(i, "_TBXT-Het")
+    ident2 <- paste0(i, "_WT")
+    findMarkers.HetWT <-
+      FindMarkers(
+        seurat,
+        ident.1 = ident1,
+        ident.2 = ident2,
+        assay = "SCT",
+        recorrect_umi = FALSE,
+        logfc.threshold = 0
+      )
+    write.csv(findMarkers.HetWT, (
+      paste(st, "_", i, "_FindMarkers_HetWt_Unfiltered.csv", sep = "")
+    ))
+    
+    findMarkers.HetWT.filt <-
+      subset(findMarkers.HetWT, p_val_adj < 0.05)
+    write.csv(findMarkers.HetWT.filt, (
+      paste(st, "_", i, "_FindMarkers_HetWt_Log0_p05.csv", sep = "")
+    ))
+    findMarkers.HetWT.filt <-
+      subset(findMarkers.HetWT.filt, abs(avg_log2FC) >= 0.25)
+    write.csv(findMarkers.HetWT.filt, (
+      paste(st, "_", i, "_FindMarkers_HetWt_Log25_p05.csv", sep = "")
+    ))
+    findMarkers.HetWT.filt <-
+      subset(findMarkers.HetWT, p_val_adj < 0.05)
+    findMarkers.HetWT.filt <-
+      subset(findMarkers.HetWT.filt, abs(avg_log2FC) >= 0.2)
+    write.csv(findMarkers.HetWT.filt, (
+      paste(st, "_", i, "_FindMarkers_HetWt_Log20_p05.csv", sep = "")
+    ))
+  })
+}
+
+
+
+for (i in 0:10) {
+  try({
+    ident1 <- paste0(i, "_TBXT-KO")
+    ident2 <- paste0(i, "_WT")
+    findMarkers.KOWT <-
+      FindMarkers(
+        seurat,
+        ident.1 = ident1,
+        ident.2 = ident2,
+        assay = "SCT",
+        recorrect_umi = FALSE,
+        logfc.threshold = 0
+      )
+    write.csv(findMarkers.KOWT, (
+      paste(wd,st, proj, "_", i, "_FindMarkers_KOWt_Unfiltered.csv", sep = "")
+    ))
+    findMarkers.KOWT.filt <- subset(findMarkers.KOWT, p_val_adj < 0.05)
+    write.csv(findMarkers.KOWT.filt, (
+      paste(wd,st, proj, "_", i, "_FindMarkers_KOWt_Log0_p05.csv", sep = "")
+    ))
+    findMarkers.KOWT.filt <-
+      subset(findMarkers.KOWT.filt, abs(avg_log2FC) >= 0.25)
+    write.csv(findMarkers.KOWT.filt, (
+      paste(wd,st, proj, "_", i, "_FindMarkers_KOWt_Log25_p05.csv", sep = "")
+    ))
+    findMarkers.KOWT.filt <-
+      subset(findMarkers.KOWT, p_val_adj < 0.05)
+    findMarkers.KOWT.filt <-
+      subset(findMarkers.KOWT.filt, abs(avg_log2FC) >= 0.2)
+    write.csv(findMarkers.KOWT.filt, (
+      paste(wd,st, proj, "_", i, "_FindMarkers_KOWt_Log20_p05.csv", sep = "")
+    ))
+  })
+}
+
+
+for (i in 0:10) {
+  try({
+    ident1 <- paste0(i, "_TBXT-KO")
+    ident2 <- paste0(i, "_TBXT-Het")
+    findMarkers.KOHet <-
+      FindMarkers(
+        seurat,
+        ident.1 = ident1,
+        ident.2 = ident2,
+        assay = "SCT",
+        recorrect_umi = FALSE,
+        logfc.threshold = 0
+      )
+    write.csv(findMarkers.KOHet, (
+      paste(st, "_", i, "_FindMarkers_KOHet_Unfiltered.csv", sep = "")
+    ))
+    findMarkers.KOHet.filt <-
+      subset(findMarkers.KOHet, p_val_adj < 0.05)
+    write.csv(findMarkers.KOHet.filt, (
+      paste(st, "_", i, "_FindMarkers_KOHet_Log0_p05.csv", sep = "")
+    ))
+    findMarkers.KOHet.filt <-
+      subset(findMarkers.KOHet.filt, abs(avg_log2FC) >= 0.25)
+    write.csv(findMarkers.KOHet.filt, (
+      paste(st, "_", i, "_FindMarkers_KOHet_Log25_p05.csv", sep = "")
+    ))
+    findMarkers.KOHet.filt <-
+      subset(findMarkers.KOHet, p_val_adj < 0.05)
+    findMarkers.KOHet.filt <-
+      subset(findMarkers.KOHet.filt, abs(avg_log2FC) >= 0.2)
+    write.csv(findMarkers.KOHet.filt, (
+      paste(st, "_", i, "_FindMarkers_KOHet_Log20_p05.csv", sep = "")
+    ))
+  })
+}
+```
+
+Fig. 3B: Volcano plots of pairwise markers between genotypes for each cluster
+```{r}
+list = c('WTHet','KOHet','HetWt')
+read.csv(list.files(pattern = "Dataset"))
+
+for (x in list) {
+  for (i in 0:10) {
+    try({
+      findMarkers <-
+        read.csv(paste(
+         wd,
+          "2022-10-28_",
+          i,
+          "_FindMarkers_",
+          x,
+          "_Unfiltered.csv",
+          sep = ""
+        ))
+      keyvals <- ifelse(
+        findMarkers$avg_log2FC < -0.25 ,
+        'black',
+        ifelse(findMarkers$avg_log2FC > 0.25, 'green',
+               'grey')
+      )
+      keyvals[is.na(keyvals)] <- 'black'
+      names(keyvals)[keyvals == 'black'] <- 'WT Up'
+      names(keyvals)[keyvals == 'grey'] <- 'Mix'
+      names(keyvals)[keyvals == 'green'] <- 'WT Down'
+      EnhancedVolcano(
+        findMarkers,
+        lab = findMarkers$X,
+        x = 'avg_log2FC',
+        y = 'p_val_adj',
+        selectLab = findMarkers$X[which(names(keyvals) %in% c('WT Up', 'WT Down'))],
+        title = x,
+        pCutoff = .05,
+        FCcutoff = 0.25,
+        pointSize = 3.0,
+        labSize = 6.0,
+        colCustom = keyvals,
+        boxedLabels = TRUE,
+        drawConnectors = TRUE,
+        widthConnectors = 0.25,
+        directionConnectors = 'y',
+        arrowheads = FALSE,
+        legendPosition = 'none',
+      )
+      ggsave(
+        paste(
+         wd
+          st,
+          proj,
+          "_",
+          i,
+          "_Volcano_",
+          x,
+          "log25",
+          ".pdf",
+          sep = ""
+        ),
+        width = 12,
+        height = 12
+      )
+    })
+  }
+}
+
+for (i in 0:10) {
+  try({
+    findMarkers <-
+      read.csv(paste(
+        wd,
+        "2022-11-01_TBXTv13_",
+        i,
+        "_FindMarkers_KOWt_Unfiltered.csv",
+        sep = ""
+      ))
+    keyvals <- ifelse(
+      findMarkers$avg_log2FC < -0.25 ,
+      'black',
+      ifelse(findMarkers$avg_log2FC > 0.25, 'blue',
+             'grey')
+    )
+    keyvals[is.na(keyvals)] <- 'black'
+    names(keyvals)[keyvals == 'black'] <- 'WT Up'
+    names(keyvals)[keyvals == 'grey'] <- 'Mix'
+    names(keyvals)[keyvals == 'blue'] <- 'WT Down'
+    EnhancedVolcano(
+      findMarkers,
+      lab = findMarkers$X,
+      x = 'avg_log2FC',
+      y = 'p_val_adj',
+      selectLab = findMarkers$X[which(names(keyvals) %in% c('WT Up', 'WT Down'))],
+      title = 'KO vs. WT',
+      pCutoff = .05,
+      FCcutoff = 0.25,
+      pointSize = 3.0,
+      labSize = 6.0,
+      colCustom = keyvals,
+      boxedLabels = TRUE,
+      drawConnectors = TRUE,
+      widthConnectors = 0.25,
+      directionConnectors = 'both',
+      arrowheads = FALSE,
+      legendPosition = 'none',
+    )
+    ggsave(
+      paste(
+        wd,
+        st,
+        proj,
+        "_",
+        i,
+        "_Volcano_KOWT_log25",
+        ".pdf",
+        sep = ""
+      ),
+      width = 12,
+      height = 12
+    )
+  })
+}
+```
+
+Fig. S7A-C: Heatmap at additional clustering resolutions
+```{r}
+#Note: These UMAPs are a different shape than Fig. 2A because they are based only on snRNA-seq data rather than both snRNA-seq and snATAC-seq data. 
+
+Idents(object = seurat) <- "integrated_snn_res.0.2" 
+DoHeatmap(seurat, 
+          features = gastruloid4, 
+          size = 3,
+          group.colors = met.brewer('Austria', 6))
+ggsave(paste(wd,st, proj, "_Heatmap_Gastruloid_Res02", ".pdf", sep = ""), width = 12, height = 8)
+
+
+seurat$integrated_snn_res.0.4 <- factor(seurat$integrated_snn_res.0.4,levels = c('0','10','7','8','5','1','3','4','2','9','6')) #This order matches main figures
+Idents(object = seurat) <- "integrated_snn_res.0.4" 
+DoHeatmap(seurat, 
+          features = gastruloid4, 
+          size = 3,
+          group.colors = met.brewer('Austria', 11))
+ggsave(paste(wd,st, proj, "_Heatmap_Gastruloid_Res04", ".pdf", sep = ""), width = 12, height = 8)
+
+Idents(object = seurat) <- "integrated_snn_res.0.6" 
+DoHeatmap(seurat, 
+          features = gastruloid4, 
+          size = 3,
+          group.colors = met.brewer('Austria', 12))
+ggsave(paste(wd,st, proj, "_Heatmap_Gastruloid_Res06", ".pdf", sep = ""), width = 12, height = 8)
+```
+
+Fig. S7A-C: UMAP at additional clustering resolutions
+```{r}
+DimPlot(seurat, reduction = "umap", group.by = "integrated_snn_res.0.2", cols =met.brewer('Austria', 6), shuffle = TRUE, pt.size = 1) + theme(legend.position="bottom")
+  ggsave(paste(st, proj, "_UMAP_LabeledClusters_Res02", ".pdf", sep = ""), width = 12, height = 12)
+  
+DimPlot(seurat, reduction = "umap", group.by = "integrated_snn_res.0.4", cols =met.brewer('Austria', 11), shuffle = TRUE, pt.size = 1) + theme(legend.position="bottom")
+  ggsave(paste(st, proj, "_UMAP_LabeledClusters_Res04", ".pdf", sep = ""), width = 12, height = 12)
+  
+DimPlot(seurat, reduction = "umap", group.by = "integrated_snn_res.0.6", cols =met.brewer('Austria', 12), shuffle = TRUE, pt.size = 1) + theme(legend.position="bottom")
+  ggsave(paste(st, proj, "_UMAP_LabeledClusters_Res06", ".pdf", sep = ""), width = 12, height = 12)
+```
+
+Fig. S7A-C: Stacked Bar by Sample at additional clustering resolutions
+```{r}
+#Res 0.2
+pt <- table(seurat$integrated_snn_res.0.2, seurat$SampleNames)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+write.csv(pt,"pt_res2.csv") #These percentages are calculated manually in excel
+pt<-read.csv("pt_res2.csv")
+pt$Var2 <- factor(pt$Var2,levels = c('TBXT-KO-2','TBXT-KO-1','TBXT-Het-2','TBXT-Het-1',"WT-2",'WT-1'))
+pt$Var1 <- as.character(pt$Var1)
+pt$Var1 <- factor(pt$Var1,levels = c('0','1','2','3','4','5'))
+
+ggplot(pt, aes(x = Var2, y = decimal, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0, hjust=.5))+
+  geom_col(position = "fill", width = .6) +
+  xlab("") +
+  ylab("Percent") +
+  scale_fill_manual(values =met.brewer('Austria', 6))+
+  scale_y_continuous(labels = scales::percent)+
+  coord_flip() +
+  theme(
+    plot.title = element_text(size=20,vjust=1,hjust=0.5,color="black",face="bold"),
+    axis.text.y = element_text(size=20,color="black", vjust = 0.65),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_text(size=20,color="black", face="bold",margin = margin(t = 10)),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_text(size=20,color="black", angle=0, vjust=0.65),
+    axis.title.x = element_text(size=20,color="black", face="bold",  margin = margin(t = 10)),
+    panel.grid = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    rect = element_blank()
+  ) 
+ggsave(paste(st, proj, "_BarGraph_ClusterBySample_Stacked_Res02", ".pdf", sep = ""), width = 12, height = 6)
+
+#Res 0.4
+pt <- table(seurat$integrated_snn_res.0.4, seurat$SampleNames)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+write.csv(pt,"pt_res4.csv") #These percentages are calculated manually in excel
+pt<-read.csv("pt_res4.csv")
+pt$Var2 <- factor(pt$Var2,levels = c('TBXT-KO-2','TBXT-KO-1','TBXT-Het-2','TBXT-Het-1',"WT-2",'WT-1'))
+pt$Var1 <- as.character(pt$Var1)
+pt$Var1 <- factor(pt$Var1,levels = c('0','10','7','8','5','1','3','4','2','9','6')) #This order matches main figures
+
+ggplot(pt, aes(x = Var2, y = decimal, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0, hjust=.5))+
+  geom_col(position = "fill", width = .6) +
+  xlab("") +
+  ylab("Percent") +
+  scale_fill_manual(values =met.brewer('Austria', 11))+
+  scale_y_continuous(labels = scales::percent)+
+  coord_flip() +
+  theme(
+    plot.title = element_text(size=20,vjust=1,hjust=0.5,color="black",face="bold"),
+    axis.text.y = element_text(size=20,color="black", vjust = 0.65),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_text(size=20,color="black", face="bold",margin = margin(t = 10)),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_text(size=20,color="black", angle=0, vjust=0.65),
+    axis.title.x = element_text(size=20,color="black", face="bold",  margin = margin(t = 10)),
+    panel.grid = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    rect = element_blank()
+  ) 
+ggsave(paste(st, proj, "_BarGraph_ClusterBySample_Stacked_Res04", ".pdf", sep = ""), width = 12, height = 6)
+
+#Res 0.6
+pt <- table(seurat$integrated_snn_res.0.6, seurat$SampleNames)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+write.csv(pt,"pt_res6.csv") #These percentages are calculated manually in excel
+pt<-read.csv("pt_res6.csv")
+pt$Var2 <- factor(pt$Var2,levels = c('TBXT-KO-2','TBXT-KO-1','TBXT-Het-2','TBXT-Het-1',"WT-2",'WT-1'))
+pt$Var1 <- as.character(pt$Var1)
+pt$Var1 <- factor(pt$Var1,levels = c('0','1','2','3','4','5','6','7','8','9','10','11'))
+
+ggplot(pt, aes(x = Var2, y = decimal, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0, hjust=.5))+
+  geom_col(position = "fill", width = .6) +
+  xlab("") +
+  ylab("Percent") +
+  scale_fill_manual(values =met.brewer('Austria', 12))+
+  scale_y_continuous(labels = scales::percent)+
+  coord_flip() +
+  theme(
+    plot.title = element_text(size=20,vjust=1,hjust=0.5,color="black",face="bold"),
+    axis.text.y = element_text(size=20,color="black", vjust = 0.65),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_text(size=20,color="black", face="bold",margin = margin(t = 10)),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_text(size=20,color="black", angle=0, vjust=0.65),
+    axis.title.x = element_text(size=20,color="black", face="bold",  margin = margin(t = 10)),
+    panel.grid = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    rect = element_blank()
+  ) 
+ggsave(paste(st, proj, "_BarGraph_ClusterBySample_Stacked_Res06", ".pdf", sep = ""), width = 12, height = 6)
+```
+
+Fig. S7D: Subset Mesoderm Cluster and plot dotplot of mesendoderm markers (C3 res 0.6)
+```{r}
+Idents(object = seurat) <- "integrated_snn_res.0.6"
+seurat[["seurat_clusters0.6"]] <- Idents(object = seurat)
+seurat.subset<- subset(seurat, idents = '3')
+
+seurat.subset$Genotype <- factor(x = seurat.subset$Genotype, levels = c("WT",'TBXT-Het','TBXT-KO'))
+seurat.subset$SampleNames <- factor(x = seurat.subset$SampleNames, levels = c("WT-1", 'WT-2','TBXT-Het-1','TBXT-Het-2','TBXT-KO-1','TBXT-KO-2'))
+
+DotPlot(seurat.subset.c6,features = c('EOMES','SOX17','PDGFRA','LHX1','PRDM1','BMP4','TBX6','MESP1'), group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_Mesendo_C3",".pdf",sep = ""),width = 5 ,height = 4)
+```
+
+Fig. S7D': Subset Mesoderm Cluster and plot dotplot of mesendoderm markers (C6 res 0.6)
+```{r}
+Idents(object = seurat) <- "integrated_snn_res.0.6"
+seurat[["seurat_clusters0.6"]] <- Idents(object = seurat)
+seurat.subset<- subset(seurat, idents = '6')
+
+seurat.subset$Genotype <- factor(x = seurat.subset$Genotype, levels = c("WT",'TBXT-Het','TBXT-KO'))
+seurat.subset$SampleNames <- factor(x = seurat.subset$SampleNames, levels = c("WT-1", 'WT-2','TBXT-Het-1','TBXT-Het-2','TBXT-KO-1','TBXT-KO-2'))
+
+DotPlot(seurat.subset.c6,features = c('EOMES','SOX17','PDGFRA','LHX1','PRDM1','BMP4','TBX6','MESP1'), group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_Mesendo_C6",".pdf",sep = ""),width = 5 ,height = 4)
+```
+
+
+
+#==================================================
+#ArchR Analysis - All Clusters
+#==================================================
+LSI
+```{r}
+#LSI-ATAC
+archr <- addIterativeLSI(
+    ArchRProj = archr, 
+    clusterParams = list(
+      resolution = c(0.1, 0.2, 0.4),
+      sampleCells = 10000,
+      n.start = 10
+    ),
+    iterations = 4, 
+    saveIterations = FALSE,
+    useMatrix = "TileMatrix", 
+    depthCol = "nFrags",
+    force = TRUE,
+    name = "LSI_ATAC") 
+
+
+#LSI-RNA
+archr <- addIterativeLSI(
+    ArchRProj = archr, 
+    clusterParams = list(
+      resolution = c(0.1, 0.2, 0.4), 
+      sampleCells = 10000,
+      n.start = 10
+    ),
+    iterations = 4,
+    saveIterations = FALSE,
+    useMatrix = "GeneExpressionMatrix", 
+    depthCol = "Gex_nUMI",
+    varFeatures = 2500,
+    firstSelection = "variable",
+    binarize = FALSE,
+    name = "LSI_RNA", 
+    force = TRUE) 
+
+```
+
+AddCombinedDims
+```{r}
+archr <- addCombinedDims(archr, reducedDims = c("LSI_ATAC", "LSI_RNA"), name =  "LSI_Combined") 
+```
+
+Add Harmony
+```{r}
+archr <- addHarmony(ArchRProj = archr, reducedDims = "LSI_Combined", name = "HarmonyBS", groupBy = c("Batch", "Sample"))
+```
+
+Add Embeddings (UMAPs)
+```{r}
+archr <- addUMAP(ArchRProj =archr, reducedDims = "LSI_ATAC", name = "UMAP_ATAC", minDist = 0.8, force = TRUE) 
+archr <- addUMAP(ArchRProj =archr, reducedDims = "LSI_RNA", name = "UMAP_RNA", minDist = 0.8, force = TRUE) 
+archr <- addUMAP(ArchRProj =archr, reducedDims = "LSI_Combined", name = "UMAP_Combined", minDist = 0.8, force = TRUE) 
+archr <- addUMAP(ArchRProj = archr, reducedDims = "HarmonyBS", name = "UMAP_HarmonyBS", nNeighbors = 30, minDist = 0.5, metric = "cosine", force = TRUE) 
+```
+
+Add Clusters
+```{r}
+archr <- addClusters(archr, reducedDims = "LSI_Combined", name = "Clusters", resolution = 0.4, force = TRUE) #10 clusters
+archr <- addClusters(archr, reducedDims = "HarmonyBS", name = "Clusters_Harmony", resolution = 0.4, force = TRUE) #8 clusters
+```
+
+Add MAGIC Impute Weights
+```{r}
+archr <- addImputeWeights(archr, reducedDims = "LSI_ATAC")
+archr <- addImputeWeights(archr, reducedDims = "LSI_RNA")
+archr <- addImputeWeights(archr, reducedDims = "LSI_Combined")
+archr <- addImputeWeights(archr, reducedDims = "HarmonyBS")
+```
+
+Fig. 2A, S5A-B: Plot Embedding by Harmony
+```{r}
+p1 <- plotEmbedding(archr, name = "SampleNames", embedding = "UMAP_HarmonyBS", colorBy = "cellColData", labelAsFactors=F, labelMeans=F)+ ggtitle("HarmonyBS") #Fig. S5A
+p2 <- plotEmbedding(archr, name = "Clusters", embedding = "UMAP_HarmonyBS",colorBy = "cellColData", labelAsFactors=F, labelMeans=F)+ggtitle("HarmonyBS") 
+p3 <- plotEmbedding(archr, name = "Genotype", embedding = "UMAP_HarmonyBS",colorBy = "cellColData", labelAsFactors=F, labelMeans=F)+ ggtitle("HarmonyBS")
+p4 <- plotEmbedding(archr, name = "Batch", embedding = "UMAP_HarmonyBS",colorBy = "cellColData", labelAsFactors=F, labelMeans=F)+ ggtitle("HarmonyBS")
+p5 <- plotEmbedding(archr, name = "Clusters_Harmony", embedding = "UMAP_HarmonyBS",colorBy = "cellColData", labelAsFactors=F, labelMeans=F) + ggtitle("HarmonyBS") #Fig. S5B
+p6 <- plotEmbedding(archr, name = "labeled_clusters", embedding = "UMAP_HarmonyBS", colorBy = "cellColData", labelAsFactors=F, labelMeans=F) + ggtitle("HarmonyBS") #Fig. 2A
+
+plotPDF(p1, p2, p3, p4, p5, p6, name = paste(st, proj, "_UMAP_HarmonyBS.pdf", sep = "") , ArchRProj = archr, addDOC = FALSE, width = 6, height = 6)
+```
+
+Fig. S5C: QC Ridgeplot (TSS and nFrags)
+```{r}
+order = c('PGCLC','Endoderm','Mesoderm','Primitive Streak-3','Primitive Streak-2','Primitive Streak-1',"Epiblast",'Extraembryonic Progenitors','Extraembryonic-3','Extraembryonic-2','Extraembryonic-1')
+
+
+p1 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "labeled_clusters", 
+    colorBy = "cellColData", 
+    name = "TSSEnrichment",
+    plotAs = "ridges",
+    groupOrder = order2
+   )
+p1
+
+p2 <- plotGroups(
+    ArchRProj = archr, 
+    groupBy = "labeled_clusters", 
+    colorBy = "cellColData", 
+    name = "log10(nFrags)",
+    plotAs = "ridges",
+    groupOrder = order2
+   )
+p2
+
+plotPDF(p1, p2, name = paste(st, proj, "_Ridge_ATACqc_SeuratClusters.pdf", sep=""), ArchRProj = archr, addDOC = FALSE, width =6, height = 6) 
+```
+
+Fig. 2C: Feature Plots for gastrulation genes
+```{r}
+markerGenes  <- c("TBXT",  "CDX2", "SOX2", "NODAL", "SOX17", "TFAP2C", "EOMES", "MESP1", "POU5F1")
+
+p <- plotEmbedding(
+    ArchRProj = archr, 
+    colorBy = "GeneScoreMatrix", 
+    name = gastruloid, 
+    embedding = "UMAP_HarmonyBS",
+)
+
+
+plotPDF(plotList = p, 
+    paste(st, proj, "_UMAP_Gastruloid_byATAC.pdf", sep=""), 
+    ArchRProj = archr,
+    addDOC = FALSE, width = 5, height = 5)
+
+p2 <- plotEmbedding(
+    ArchRProj = archr, 
+    colorBy = "GeneScoreMatrix", 
+    name = gastruloid, 
+    embedding = "UMAP_HarmonyBS",
+    quantCut = c(0.01, 0.95),
+    log2Norm = TRUE,
+    discreteSet = 'comet',
+    imputeWeights = getImputeWeights(archr)
+)
+p2
+```
+
+Fig. 2E: Browser Tracks and Peak2Gene Links
+```{r}
+markerGenes  <- c("TBXT", "SOX2", "POU5F1")
+
+archr <-getCoAccessibility(
+  ArchRProj = archr,
+  corCutOff = 0.5,
+  resolution = 1,
+  returnLoops = TRUE
+)
+
+archr <- addPeak2GeneLinks(
+    ArchRProj = archr,
+    reducedDims = "HarmonyBS",
+    useMatrix = "GeneExpressionMatrix"
+)
+p2g <- getPeak2GeneLinks(
+    ArchRProj = archr,
+    corCutOff = 0.95,
+    resolution = 1,
+    returnLoops = TRUE
+)
+
+p <- plotBrowserTrack(
+    ArchRProj = archr, 
+    groupBy = "labeled_clusters", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getPeak2GeneLinks(archr)
+)
+
+plotPDF(p,  name = paste(st, proj, "_Tracks_byCluster_withPeak2Gene.pdf", sep = ""), ArchRProj = archr, addDOC = FALSE, width = 6, height = 6)
+```
+
+Fig. S5D: getMarkers (Gene Expression, Gene Score, Peaks)
+```{r}
+#ATAC
+markersGS <- getMarkerFeatures(
+    ArchRProj = archr, 
+    useMatrix = "GeneScoreMatrix", 
+    groupBy = "labeled_clusters",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon")
+markerListGS <- getMarkers(markersGS, cutOff = "FDR <= 1 & Log2FC >= 0")
+write.csv(markerListGS, paste(wd, st, proj, "_markerListGS_Unfiltered.csv", sep = ""))
+heatmapGS <- plotMarkerHeatmap(seMarker = markersGS, cutOff = "FDR <= 0.01 & Log2FC >= 1.25", transpose = TRUE)
+plotPDF(heatmapGS,  name = paste(st, proj, "_Heatmap_markersGS.pdf", sep=""), ArchRProj = archr, addDOC = FALSE, width =6, height = 6) 
+
+#RNA
+markersGE <- getMarkerFeatures(
+    ArchRProj = archr, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "labeled_clusters",
+    bias = c("Gex_nUMI", "Gex_nGenes",'Gex_MitoRatio','Gex_RiboRatio'),
+    testMethod = "wilcoxon")
+markerListGE <- getMarkers(markersGE, cutOff = "FDR <= 0 & Log2FC >= 0")
+write.csv(markerListGE, paste(wd, st, proj, "_markerListGE_Unfiltered.csv", sep = ""))
+heatmapGE <- plotMarkerHeatmap(seMarker = markersGE, cutOff = "FDR <= 0.01 & Log2FC >= 1.25", transpose = TRUE)
+plotPDF(heatmapGE,  name = paste(st, proj, "_Heatmap_markersGE.pdf", sep=""), ArchRProj = archr, addDOC = FALSE, width =6, height = 6) 
+
+#Peaks
+archr <- addGroupCoverages(ArchRProj = archr, groupBy = "labeled_clusters", threads = 1) 
+pathToMacs2 <- findMacs2()
+archr <- addReproduciblePeakSet(ArchRProj = archr, groupBy = "labeled_clusters", pathToMacs2 = pathToMacs2)  
+getPeakSet(archr)
+
+archr <- addPeakMatrix(archr) 
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = archr, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "labeled_clusters",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon")
+markerListPeaks <- getMarkers(markersPeaks, cutOff = "FDR >= 0 & abs(Log2FC) >=0")
+write.csv(markerListPeaks, paste(wd, st, proj, "_markerListPeaks_Unfiltered.csv", sep = ""))
+heatmapPeaks <- plotMarkerHeatmap(seMarker = markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1.25", transpose = TRUE)
+plotPDF(heatmapPeaks,  name = paste(st, proj, "_Heatmap_markersPeaks.pdf", sep=""), ArchRProj = archr, addDOC = FALSE, width =6, height = 6) 
+``` 
+
+Fig. 3A: UMAP highlighted by Mesoderm 
+```{r}
+idxSample <- BiocGenerics::which(archr$labeled_clusters %in% "Mesoderm")
+cellsSample <- archr$cellNames[idxSample]
+
+p <- plotEmbedding(
+  embedding = 'UMAP_HarmonyBS',
+  archr, 
+  colorBy = "cellColData", 
+  name = "labeled_clusters",
+  pal = c("Mesoderm" = "#7F294E", "Non.Highlighted" = "lightgrey"),
+  highlightCells = cellsSample
+)
+plotPDF(p, name = paste(st, proj, "_UMAP_MesoHighlight.pdf", sep = "") , ArchRProj = archr, addDOC = FALSE, width = 6, height = 6)
+```
+
+Save ArchR Project
+```{r}
+archr <- saveArchRProject(ArchRProj = archr, load = TRUE)
+```
+
+Fig. S5E: Codex Enrichment
+```{r}
+archr <- addArchRAnnotations(ArchRProj = archr, collection = "Codex", force = TRUE)
+
+enrichCodex <- peakAnnoEnrichment(
+    seMarker = markersPeaks,
+    ArchRProj = archr,
+    peakAnnotation = "Codex",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+heatmapCodex <-
+  plotEnrichHeatmap(
+    enrichCodex,
+    n = 10,
+    transpose = TRUE,
+    clusterCols = FALSE
+  )
+heatmapCodex
+plotPDF(heatmapCodex, name = paste(st, proj, "_Heatmap_CODEXenrich.pdf", sep=""), width = 8, height = 6, ArchRProj = archr, addDOC = FALSE)
+```
+
+
+
+
+#==================================================
+#Seurat - Mesoderm
+#==================================================
+
+Subset Mesoderm Cluster
+```{r}
+Idents(seurat) <- 'labeled_clusters'
+seurat.subset<- subset(seurat, idents = 'Mesoderm')
+
+seurat.subset$Genotype <- factor(x = seurat.subset$Genotype, levels = c("WT",'TBXT-Het','TBXT-KO'))
+table(seurat.subset$Genotype)
+#   WT TBXT-Het  TBXT-KO 
+    # 1575      764      873 
+
+seurat.subset$SampleNames <- factor(x = seurat.subset$SampleNames, levels = c("WT-1", 'WT-2','TBXT-Het-1','TBXT-Het-2','TBXT-KO-1','TBXT-KO-2'))
+
+table(seurat.subset$SampleNames)
+#      WT-1       WT-2 TBXT-Het-1 TBXT-Het-2  TBXT-KO-1  TBXT-KO-2 
+#       828        747        245        519        425        448 
+```
+
+Calculate Pairwise DEGs using FindMarkers
+```{r}
+Idents(seurat.subset) <- "Genotype"
+findMarkers.HetWT <- FindMarkers(seurat.subset, 
+                                   ident.1 = "TBXT-Het", 
+                                   ident.2 = "WT",
+                                   assay = "SCT",
+                                   recorrect_umi = FALSE,
+                                   logfc.threshold = 0)
+          write.csv(findMarkers.HetWT,(paste(st, proj,"_FindMarkers_HetWt_Unfiltered.csv",sep = "")))
+  
+      findMarkers.HetWT.filt <- subset(findMarkers.HetWT, p_val_adj<0.05)
+          write.csv(findMarkers.HetWT.filt, (paste(st, proj,"_FindMarkers_HetWt_Log0_p05.csv", sep = "")))
+      findMarkers.HetWT.filt <- subset(findMarkers.HetWT.filt, abs(avg_log2FC)>=0.25)
+          write.csv(findMarkers.HetWT.filt, (paste(st, proj,"_FindMarkers_HetWt_Log25_p05.csv", sep = "")))
+      findMarkers.HetWT.filt <- subset(findMarkers.HetWT, p_val_adj<0.05)
+          findMarkers.HetWT.filt <- subset(findMarkers.HetWT.filt, abs(avg_log2FC)>=0.2)
+          write.csv(findMarkers.HetWT.filt, (paste(st, proj,"_FindMarkers_HetWt_Log20_p05.csv", sep = "")))
+
+findMarkers.KOWT <- FindMarkers(seurat.subset, 
+                                   ident.1 = "TBXT-KO", 
+                                   ident.2 = "WT",
+                                   assay = "SCT",
+                                   recorrect_umi = FALSE,
+                                   logfc.threshold = 0)
+        write.csv(findMarkers.KOWT, (paste(st, proj,"_FindMarkers_KOWt_Unfiltered.csv",sep = "")))
+  
+      findMarkers.KOWT.filt <- subset(findMarkers.KOWT, p_val_adj<0.05) 
+         write.csv(findMarkers.KOWT.filt, (paste(st, proj,"_FindMarkers_KOWt_Log0_p05.csv", sep = "")))
+      findMarkers.KOWT.filt <- subset(findMarkers.KOWT.filt, abs(avg_log2FC)>=0.25) 
+         write.csv(findMarkers.KOWT.filt, (paste(st, proj,"_FindMarkers_KOWt_Log25_p05.csv", sep = "")))
+      findMarkers.KOWT.filt <- subset(findMarkers.KOWT, p_val_adj<0.05) 
+         findMarkers.KOWT.filt <- subset(findMarkers.KOWT.filt, abs(avg_log2FC)>=0.2) 
+         write.csv(findMarkers.KOWT.filt, (paste(st, proj,"_FindMarkers_KOWt_Log20_p05.csv", sep = "")))
+
+
+  
+findMarkers.KOHet <- FindMarkers(seurat.subset, 
+                                   ident.1 = "TBXT-KO", 
+                                   ident.2 = "TBXT-Het",
+                                   assay = "SCT",
+                                   recorrect_umi = FALSE,
+                                   logfc.threshold = 0)
+       write.csv(findMarkers.KOHet, (paste(st, proj,"_FindMarkers_KOHet_Unfiltered.csv",sep = "")))
+  
+     findMarkers.KOHet.filt <- subset(findMarkers.KOHet, p_val_adj<0.05) 
+        write.csv(findMarkers.KOHet.filt, (paste(st, proj,"_FindMarkers_KOHet_Log0_p05.csv", sep = "")))
+     findMarkers.KOHet.filt <- subset(findMarkers.KOHet.filt, abs(avg_log2FC)>=0.25) 
+        write.csv(findMarkers.KOHet.filt, (paste(st, proj,"_FindMarkers_KOHet_Log25_p05.csv", sep = "")))
+    findMarkers.KOHet.filt <- subset(findMarkers.KOHet, p_val_adj<0.05) 
+        findMarkers.KOHet.filt <- subset(findMarkers.KOHet.filt, abs(avg_log2FC)>=0.20) 
+        write.csv(findMarkers.KOHet.filt, (paste(st, proj,"_FindMarkers_KOHet_Log20_p05.csv", sep = "")))
+```
+
+Fig. 3B: Volcano plot with gene of interest labeled
+```{r} 
+#HetWT
+findMarkers.hetwt <-read.csv("~/2022-06-28_22_FindMarkers_HetWt_Unfiltered.csv")
+findmarkers<-findMarkers.hetwt
+
+labels <- c('CYP26A1','FGF17','PRDM1','FZD7','CDH2','SLIT2','NODAL','DDT','AC073071.1','AL589740.1','GABRB2','UNC5C','WNT5A','NTS','BMPER')
+
+keyvals <- ifelse(
+    findMarkers$avg_log2FC < -0.25 , 'black',
+      ifelse(findMarkers$avg_log2FC > 0.25, 'green',
+        'grey'))
+  keyvals[is.na(keyvals)] <- 'grey'
+  names(keyvals)[keyvals == 'black'] <- 'WT Up'
+  names(keyvals)[keyvals == 'grey'] <- 'Mix'
+  names(keyvals)[keyvals == 'green'] <- 'WT Down'
+EnhancedVolcano(findMarkers,
+    lab = findMarkers$X,
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    selectLab = labels,
+    title = 'Het vs. WT',
+    pCutoff = .05,
+    FCcutoff = 0.25,
+    pointSize = 3.0,
+    labSize = 6.0,
+    colCustom = keyvals,
+    boxedLabels = TRUE,
+    drawConnectors = TRUE,
+    widthConnectors = 0.25, 
+    directionConnectors = 'y',
+    arrowheads = FALSE,
+    colAlpha = 0.5)
+ggsave(paste(wd, st, proj, "_Volcano_HetWT_log25_manuallabels", ".pdf", sep = ""), width = 12, height = 12)
+
+#KOWT
+labels <- c('CYP26A1','FGF17','PRDM1','PDGFRA','FGF13','NTN4','WNT5A','BMPER','UNC5C','RSPO3','RALYL','WDPCP','GNAI1','LINC01515','AC112178.1','ST6GALNAC5','SERPINE2','LINC02163')
+
+findMarkers <-read.csv("~/2022-11-01_TBXTv13_2_FindMarkers_KOWt_Unfiltered.csv")
+keyvals <- ifelse(  
+    findMarkers$avg_log2FC < -0.25 , 'black',
+      ifelse(findMarkers$avg_log2FC > 0.25, 'blue',
+        'grey'))
+  keyvals[is.na(keyvals)] <- 'grey'
+  names(keyvals)[keyvals == 'black'] <- 'WT Up'
+  names(keyvals)[keyvals == 'grey'] <- 'Mix'
+  names(keyvals)[keyvals == 'blue'] <- 'WT Down'
+EnhancedVolcano(findMarkers,
+    lab = findMarkers$X,
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    selectLab = labels,
+    title = 'KO vs. WT',
+    pCutoff = .05,
+    FCcutoff = 0.5,
+    pointSize = 3.0,
+    labSize = 6.0,
+    colCustom = keyvals,
+    boxedLabels = TRUE,
+    drawConnectors = TRUE,
+    widthConnectors = 0.25, 
+    directionConnectors = 'y',
+    arrowheads = FALSE)
+ggsave(paste(wd, st, proj, "_Volcano_KOWT_log25_manuallabels", ".pdf", sep = ""), width = 12, height = 12)
+```
+
+Fig. 3C: Identify DEGs shared between WT vs. Het and WT vs. KO comparisons
+```{r}
+#Import and format data
+findMarkers.hetwt <-read.csv("~/2023-06-26_TBXTv14-meso_FindMarkers_HetWt_Log25_p05.csv")
+findMarkers.HetWT.Hetup <- subset(findMarkers.hetwt, avg_log2FC>=0.25)
+findMarkers.HetWT.Hetdown <- subset(findMarkers.hetwt, avg_log2FC<=0.25)
+
+findMarkers.kowt <-read.csv("~/2023-06-26_TBXTv14-meso_FindMarkers_KOWt_Log25_p05.csv")
+findMarkers.KOWT.KOup <- subset(findMarkers.kowt, avg_log2FC>=0.25)
+findMarkers.KOWT.KOdown <- subset(findMarkers.kowt, avg_log2FC<=0.25)
+
+Hetup <- findMarkers.HetWT.Hetup$X
+Hetdown <- findMarkers.HetWT.Hetdown$X
+KOup <- findMarkers.KOWT.KOup$X
+KOdown <- findMarkers.KOWT.KOdown$X
+
+
+# Sample lists 
+list_names <- c("Hetup", "Hetdown", "KOup", "KOdown")
+all_lists <- list(Hetup, Hetdown, KOup, KOdown)
+
+# Get all combinations of gene lists 
+list_combinations_2 <- combn(seq_along(all_lists), 2, simplify = FALSE)
+list_combinations_3 <- combn(seq_along(all_lists), 3, simplify = FALSE)
+list_combinations_4 <- combn(seq_along(all_lists), 4, simplify = FALSE)
+all_combinations <- c(list_combinations_2, list_combinations_3, list_combinations_4)
+
+#=========================================
+# Create a data frame to store the results
+max_overlap <- max(sapply(all_combinations, function(comb) length(Reduce(intersect, all_lists[comb]))))
+# Check if there are any combinations
+if (length(all_combinations) > 0) {
+  # Create a data frame to store the results with the right number of rows and initialize with NA
+  overlap_df <- data.frame(matrix(NA, nrow = max_overlap, ncol = length(all_combinations)))
+}
+
+# Iterate through each combination and find the shared genes
+if (length(all_combinations) > 0) {
+  max_overlap <- max(sapply(all_combinations, function(comb) length(Reduce(intersect, all_lists[comb]))))
+  overlap_genes_list <- vector("list", length(all_combinations))
+  for (i in seq_along(all_combinations)) {
+    list_indices <- all_combinations[[i]]
+    list_genes <- all_lists[list_indices]
+    overlapping_genes <- Reduce(intersect, list_genes)
+    overlap_genes_list[[i]] <- overlapping_genes
+  }
+  overlap_df <- as.data.frame(do.call(cbind, lapply(overlap_genes_list, function(x) c(x, rep(NA, max_overlap - length(x))))))
+  col_names <- sapply(all_combinations, function(comb) {
+    paste(list_names[comb], collapse = "_")
+  })
+  colnames(overlap_df) <- col_names
+  print(gene_count_table)
+  write.csv(overlap_df, file = paste0(wd, st,"_GeneList_HetWT-vs-KOWT.csv"), row.names = FALSE)
+
+  # Table summarizing the count of genes in each combination
+  gene_count_table <- colSums(!is.na(overlap_df))
+  gene_count_table_df <- data.frame(Combination = colnames(overlap_df), Count = gene_count_table)
+  overlap_df_filt <- overlap_df[, gene_count_table > 0]
+  write.csv(overlap_df_filt, file = paste0(wd, st,"_GeneList_HetWT-vs-KOWT_Filt.csv"), row.names = FALSE)
+
+  gene_count_table_filt <- colSums(!is.na(overlap_df_filt))
+    gene_count_table_filt_df <- data.frame(Combination = colnames(overlap_df_filt), Count = gene_count_table_filt)
+
+  write.csv(gene_count_table_filt_df, file = paste0(wd, st, "_Genecount_HetWT-vs-KOWT_Filt.csv"), row.names = FALSE)
+
+} else {
+  print("No gene list combinations found.")
+}
+```
+
+Fig. 3C: Identify DEGs unique between between WT vs. Het or WT vs. KO comparisons
+```{r}
+if (length(all_combinations) > 0) {
+  max_overlap <- max(sapply(all_combinations, function(comb) length(Reduce(intersect, all_lists[comb]))))
+  overlap_genes_list <- vector("list", length(all_combinations))
+  unique_genes_list <- vector("list", length(all_combinations))
+  col_names <- sapply(all_combinations, function(comb) {
+    paste(list_names[comb], collapse = "_")
+  })
+
+# Iterate through each combination and find the shared genes
+  for (i in seq_along(all_combinations)) {
+    list_indices <- all_combinations[[i]]
+    list_genes <- all_lists[list_indices]
+    overlapping_genes <- Reduce(intersect, list_genes)
+    unique_genes <- lapply(list_genes, setdiff, y = overlapping_genes)
+    overlap_genes_list[[i]] <- overlapping_genes
+    unique_genes_list[[i]] <- unique_genes
+  }
+
+max_unique_genes <- max(sapply(unique_genes_list, function(genes) length(genes)))
+unique_genes_list_padded <- lapply(unique_genes_list, function(genes) {
+  num_unique <- length(genes)
+  padded_genes <- c(genes, rep("", max_unique_genes - num_unique))
+  as.character(padded_genes)
+})
+unique_genes_df <- data.frame(unique_genes_list_padded)
+unique_genes_df[is.na(unique_genes_df)] <- ""
+colnames(unique_genes_df) <- col_names
+unique_genes_df_long <- pivot_longer(unique_genes_df, cols = everything(), names_to = "Combination", values_to = "Genes")
+unique_genes_df_long_separated <- separate_rows(unique_genes_df_long, Genes, sep = ",")
+unique_genes_df_long_separated$Genes <- trimws(unique_genes_df_long_separated$Genes)
+unique_genes_df_melted <- dcast(unique_genes_df_long_separated, Genes ~ Combination, value.var = "Genes", fun.aggregate = toString)
+write.csv(unique_genes_df_melted, file = paste0(wd, st,"_UniqueGenes_HetWT-vs-KOWT_Melted.csv"), row.names = FALSE)
+
+} else {
+  print("No gene list combinations found.")
+}
+```
+
+Calculate DEGs overlapping between Het and KO and output CSV of lists
+```{r}
+KOWT.filt <- read.csv('~/2023-06-28_TBXT-meso_prepSCT_FindMarkers_KOWt_Log25_p05.csv', header = TRUE) 
+HetWT.filt <-read.csv("~/2023-06-28_TBXTv14-meso_prepSCT_FindMarkers_HetWt_Log25_p05.csv", header = TRUE) 
+KOHet.filt <- read.csv('~/2023-06-28_TBXTv14-meso_prepSCT_FindMarkers_KOHet_Log25_p05.csv', header = TRUE) 
+
+names(HetWT.filt)[names(HetWT.filt) == 'avg_log2FC'] <- 'avg_log2FC.HetWT'
+names(HetWT.filt)[names(HetWT.filt) == 'p_val_adj'] <- 'p_val_adj.HetWT'
+names(KOWT.filt)[names(KOWT.filt) == 'avg_log2FC'] <- 'avg_log2FC.KOWT'
+names(KOWT.filt)[names(KOWT.filt) == 'p_val_adj'] <- 'p_val_adj.KOWT'
+names(KOHet.filt)[names(KOHet.filt) == 'avg_log2FC'] <- 'avg_log2FC.KOHet'
+names(KOHet.filt)[names(KOHet.filt) == 'p_val_adj'] <- 'p_val_adj.KOHet'
+
+
+shared <- merge(HetWT.filt, KOWT.filt, by = 'X', all = TRUE, sort = FALSE)
+shared <- merge(shared, KOHet.filt, by = 'X', all = TRUE, sort = FALSE)
+
+shared <- shared[order(shared$avg_log2FC.KOWT),]
+
+KOWT.filt <- KOWT.filt[order(KOWT.filt$avg_log2FC),]
+HetWT.filt <- HetWT.filt[order(HetWT.filt$avg_log2FC),]
+KOHet.filt <- KOHet.filt[order(KOHet.filt$avg_log2FC),]
+```
+
+Fig. 3D: Dotplot of DEGs KO vs. WT (log2fc >=0.25 ,p<= 0.05)
+```{r}
+seurat.subset$Genotype <- factor(x = seurat.subset$Genotype, levels = c('TBXT-KO','TBXT-Het',"WT"))
+
+DotPlot(seurat.subset,features = KOWT.filt$X, group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+ggsave( paste(wd,st,proj,"_DotPlot_byGenotype_KOWT_Log25_p05",".pdf",sep = ""),width = 28 ,height = 3) 
+```
+
+Fig. 3G-I: Dotplot of Mesoderm, WNT, and EMT genes
+```{r}
+#Mesoderm Identity
+DotPlot(seurat.subset,features = c('EOMES','SOX17','PDGFRA','LHX1','PRDM1','BMP4','TBX6','MESP1'), group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_MesodermIdentity",".pdf",sep = ""),width = 5 ,height = 4)
+
+#WNT Signaling
+DotPlot(seurat.subset,features = c('WNT11','WNT5A','WNT5B','WDPCP','TCF4','RSPO3','FZD7','WNT3','WNT3A'), group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_WNTsignaling",".pdf",sep = ""),width = 5 ,height = 4)
+
+#EMT
+DotPlot(seurat.subset,features = c('SNAI2','SNAI1','TWIST1','CDH1','EFNA5','CDH12','CADM2','CADM1'), group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_EMT",".pdf",sep = ""),width = 5 ,height = 4)
+```
+
+Fig. 3J, S8A: Compare to existing ChIP-seq datasets
+```{r}
+#Import Data
+chip <-read.csv("~/CHIP_Datasets.csv")
+FlyA <- chip$FlyA
+FlyB <- chip$FlyB
+Tsankov <- chip$Tsankov
+Lolas <- chip$Lolas
+
+# Sample lists 
+list_names <- c("Hetup", "Hetdown", "KOup", "KOdown", "FLYA","FLYB","Tsankov","Lolas")
+all_lists <- list(Hetup, Hetdown, KOup, KOdown, FlyA, FlyB, Tsankov, Lolas)
+
+# Get all combinations of gene lists 
+list_combinations_2 <- combn(seq_along(all_lists), 2, simplify = FALSE)
+list_combinations_3 <- combn(seq_along(all_lists), 3, simplify = FALSE)
+list_combinations_4 <- combn(seq_along(all_lists), 4, simplify = FALSE)
+list_combinations_5 <- combn(seq_along(all_lists), 5, simplify = FALSE)
+list_combinations_6 <- combn(seq_along(all_lists), 6, simplify = FALSE)
+list_combinations_7 <- combn(seq_along(all_lists), 7, simplify = FALSE)
+list_combinations_8 <- combn(seq_along(all_lists), 8, simplify = FALSE)
+all_combinations <- c(list_combinations_2, list_combinations_3, list_combinations_4, list_combinations_5, list_combinations_6, list_combinations_7, list_combinations_8)
+
+#Iterate through each combination and find the shared genes
+max_overlap <- max(sapply(all_combinations, function(comb) length(Reduce(intersect, all_lists[comb]))))
+if (length(all_combinations) > 0) {
+  overlap_df <- data.frame(matrix(NA, nrow = max_overlap, ncol = length(all_combinations)))
+}
+
+if (length(all_combinations) > 0) {
+  max_overlap <- max(sapply(all_combinations, function(comb) length(Reduce(intersect, all_lists[comb]))))
+  overlap_genes_list <- vector("list", length(all_combinations))
+  for (i in seq_along(all_combinations)) {
+    list_indices <- all_combinations[[i]]
+    list_genes <- all_lists[list_indices]
+    overlapping_genes <- Reduce(intersect, list_genes)
+    overlap_genes_list[[i]] <- overlapping_genes
+  }
+
+  overlap_df <- as.data.frame(do.call(cbind, lapply(overlap_genes_list, function(x) c(x, rep(NA, max_overlap - length(x))))))
+  col_names <- sapply(all_combinations, function(comb) {
+    paste(list_names[comb], collapse = "_")
+  })
+  colnames(overlap_df) <- col_names
+  print(gene_count_table)
+  write.csv(overlap_df, file = paste0(wd, st, "_ChipOverlap_Genes_All_Split.csv"), row.names = FALSE)
+  gene_count_table <- colSums(!is.na(overlap_df))
+  gene_count_table_df <- data.frame(Combination = colnames(overlap_df), Count = gene_count_table)
+  overlap_df_filt <- overlap_df[, gene_count_table > 0]
+  write.csv(overlap_df_filt, file = paste0(wd, st, "_ChipOverlap_Filt_Split.csv"), row.names = FALSE)
+  gene_count_table_filt <- colSums(!is.na(overlap_df_filt))
+    gene_count_table_filt_df <- data.frame(Combination = colnames(overlap_df_filt), Count = gene_count_table_filt)
+  write.csv(gene_count_table_filt_df, file = paste0(wd, st, "_ChipOverlap_GeneCount_Filt_Split.csv"), row.names = FALSE)
+
+} else {
+  print("No gene list combinations found.")
+}
+```
+
+Fig. S6C-D: Expanded Dotplot of Mesoderm, WNT
+```{r}
+#Mesoderm Identity
+feats = c('EOMES','SOX17','PDGFRA','LHX1','PRDM1','BMP4','TBX6','MESP1','ADAMTS3','THSD7A','ENPP1','GNAI1','BMPER','HES1','MAML3')
+DotPlot(seurat.subset,features = feats, group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_MesodermIdentity_extended",".pdf",sep = ""),width = 5 ,height = 4)
+
+#WNT Signaling
+feats = c('WNT11','WNT5A','WNT5B','WDPCP','TCF4','RSPO3','CTNNB1','WNT6','WNT3A','FZD3','FZD5','FZD6','FZD7','DVL1','LRP5','LRP6','WNT3')
+DotPlot(seurat.subset,features = feats, group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1)) + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_WNTsignaling_extended",".pdf",sep = ""),width = 5 ,height = 4)
+```
+
+Fig. S6A: Dotplot log2fc >=0.25 ,p<= 0.05 Het vs. WT
+```{r}
+DotPlot(seurat.subset,features = HetWT.filt$X, group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1))  + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_HetWT_Log25_p05",".pdf",sep = ""),width = 6 ,height = 28) + coord_flip()
+```
+
+Fig. S6B: Dotplot log2fc >=0.25 ,p<= 0.05 Het vs. KO
+```{r}
+DotPlot(seurat.subset,features = KOHet.filt$X, group.by = "Genotype",assay = "SCT") +theme(axis.text.x = element_text(angle = 90, hjust = 1))  + coord_flip()
+ggsave( paste(wd, st,proj,"_DotPlot_byGenotype_KOHet_Log25_p05",".pdf",sep = ""),width = 6 ,height = 28) + coord_flip()
+```
+
+
+
+
+#==================================================
+#ArchR - Mesoderm
+#==================================================
+
+Subset Mesoderm
+```{r}
+archR_proj <- archr
+subset <- BiocGenerics::which(archR_proj$labeled_clusters %in% "Mesoderm")
+cellsSample <- archR_proj$cellNames[subset]
+archr.meso <- archR_proj[cellsSample, ]
+
+archr.meso
+# numberOfCells(1): 3212
+# medianTSS(1): 13.3085
+# medianFrags(1): 12423
+
+archr.meso <- subsetArchRProject(
+  ArchRProj = archR_proj,
+  cells = getCellNames(archr.meso),
+  outputDirectory = "ArchR-Meso",
+  dropCells = TRUE,
+  logFile = NULL,
+  threads = getArchRThreads(),
+  force = TRUE
+)
+
+archr.meso <- addImputeWeights(archr.meso, reducedDims = "HarmonyBS") 
+archr.meso <- saveArchRProject(ArchRProj = archr.meso, load = TRUE) 
+```
+
+getMarkers GeneScore 
+```{r}
+markersGS.meso <- getMarkerFeatures(
+    ArchRProj = archr.meso,
+    useMatrix = "GeneScoreMatrix",
+    groupBy = "Genotype",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon")
+
+markerListGS.meso <- getMarkers(markersGS.meso, cutOff = "FDR >= 0 & abs(Log2FC) >=0")
+write.csv(markerListGS.meso, paste(wd, st, proj, "_markerListGS_Unfiltered.csv", sep=""))
+
+markerListGS.meso.subset <- getMarkers(markersGS.meso, cutOff =  'FDR < 0.1 & abs(Log2FC)>=0.5') 
+write.csv(markerListGS.meso.subset, (paste(wd, st, proj,"_markerListGS_Log5_FDR1.csv", sep = "")))
+
+heatmapGS.meso <- plotMarkerHeatmap(seMarker = markersGS.meso, cutOff = "FDR <= 0.1 & abs(Log2FC) >= .5", transpose = TRUE)
+plotPDF(heatmapGS.meso, name = paste(st, proj, "_Heatmap_getMarkersGS", sep=""), width = 6, height = 6, ArchRProj = archr.meso, addDOC = FALSE)
+```
+
+getMarkers GeneExpression 
+```{r }
+markersGE.meso <- getMarkerFeatures(
+    ArchRProj = archr.meso,
+    useMatrix = "GeneExpressionMatrix",
+    groupBy = "Genotype",
+    bias = c("Gex_nUMI", "Gex_nGenes",'Gex_MitoRatio','Gex_RiboRatio'),
+    testMethod = "wilcoxon")
+
+markerListGE.meso <- getMarkers(markersGE.meso, cutOff = "FDR >= 0 & abs(Log2FC) >=0")
+write.csv(markerListGE.meso, paste(wd, st, proj, "_markerListGE_Unfiltered.csv", sep=""))
+  
+markerListGE.meso.subset <- getMarkers(markersGE.meso, cutOff =  'FDR < 0.1 & abs(Log2FC)>=0.5') 
+write.csv(markerListGE.meso.subset, (paste(wd, st, proj,"_markerListGE_Log5_FDR1.csv", sep = "")))
+
+heatmapGE.meso <- plotMarkerHeatmap(seMarker = markersGE.meso, cutOff = "FDR <= 0.1 & abs(Log2FC) >= .5", transpose = TRUE)
+plotPDF(heatmapGE.meso, name = paste(st, proj, "_Heatmap_getMarkersGE", sep=""), width = 6, height = 6, ArchRProj = archr.meso, addDOC = FALSE)
+```
+
+Add Peaks Matrix based on genotype
+```{r}
+archr.meso <- addGroupCoverages(ArchRProj = archr.meso, groupBy = "Genotype")
+archr.meso <- addReproduciblePeakSet(
+    ArchRProj = archr.meso, 
+    groupBy = "Genotype", 
+    pathToMacs2 = pathToMacs2
+)
+getPeakSet(archr.meso)
+archr.meso <- addPeakMatrix(archr.meso)
+```
+
+Calculate Pairwise Markers
+```{r }
+#Het vs. WT
+markerGS_HetWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneScoreMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-Het",
+  bgdGroups = "WT")
+markerGE_HetWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("Gex_nUMI", "Gex_nGenes",'Gex_MitoRatio','Gex_RiboRatio'),
+  useGroups = "TBXT-Het",
+  bgdGroups = "WT")
+markerPeak_HetWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-Het",
+  bgdGroups = "WT")
+
+#KO vs. WT
+markerGS_KOWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneScoreMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-KO",
+  bgdGroups = "WT")
+markerGE_KOWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("Gex_nUMI", "Gex_nGenes",'Gex_MitoRatio','Gex_RiboRatio'),
+  useGroups = "TBXT-KO",
+  bgdGroups = "WT")
+markerPeak_KOWT.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-KO",
+  bgdGroups = "WT")
+
+#KO vs. Het
+markerGS_KOHet.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneScoreMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-KO",
+  bgdGroups = "TBXT-Het")
+markerGE_KOHet.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("Gex_nUMI", "Gex_nGenes",'Gex_MitoRatio','Gex_RiboRatio'),
+  useGroups = "TBXT-KO",
+  bgdGroups = "TBXT-Het")
+markerPeak_KOHet.meso <- getMarkerFeatures(
+  ArchRProj = archr.meso, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Genotype",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "TBXT-KO",
+  bgdGroups = "TBXT-Het")
+
+markerListGS_HetWT.meso <- getMarkers(markerGS_HetWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListGE_HetWT.meso <- getMarkers(markerGE_HetWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListPeak_HetWT.meso <- getMarkers(markerPeak_HetWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+
+markerListGS_KOWT.meso <- getMarkers(markerGS_KOWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListGE_KOWT.meso <- getMarkers(markerGE_KOWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListPeak_KOWT.meso <- getMarkers(markerPeak_KOWT.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+
+markerListGS_KOHet.meso <- getMarkers(markerGS_KOHet.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListGE_KOHet.meso <- getMarkers(markerGE_KOHet.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+markerListPeak_KOHet.meso <- getMarkers(markerPeak_KOHet.meso, cutOff = "FDR < 1 & abs(Log2FC) >0") 
+
+#Save
+write.csv(markerListGS_HetWT.meso, paste(wd,st, proj, "_markerListGS_HetWT_Unfiltered.csv", sep=""))
+write.csv(markerListGE_HetWT.meso, paste(wd, st, proj, "_markerListGE_HetWT_Unfiltered.csv", sep=""))
+write.csv(markerListPeak_HetWT.meso, paste(wd,st, proj, "_markerListPeak_HetWT_Unfiltered.csv", sep=""))
+
+write.csv(markerListGS_KOWT.meso, paste(wd,st, proj, "_markerListGS_KOWT_Unfiltered.csv", sep=""))
+write.csv(markerListGE_KOWT.meso, paste(wd,st, proj, "_markerListGE_KOWT_Unfiltered.csv", sep=""))
+write.csv(markerListPeak_KOWT.meso, paste(wd,st, proj, "_markerListPeak_KOWT_Unfiltered.csv", sep=""))
+
+write.csv(markerListGS_KOHet.meso, paste(wd,st, proj, "_markerListGS_KOHet_Unfiltered.csv", sep=""))
+write.csv(markerListGE_KOHet.meso, paste(wd,st, proj, "_markerListGE_KOHet_Unfiltered.csv", sep=""))
+write.csv(markerListPeak_KOHet.meso, paste(wd,st, proj, "_markerListPeak_KOHet_Unfiltered.csv", sep=""))
+
+save.image(paste(wd, st, proj, "_PairwiseMarkers.RData", sep="")) 
+```
+
+Fig. S9A-B: MA of DARs and Peaks
+```{r}
+GS_HetWT <- plotMarkers(seMarker = markerGS_HetWT.meso, name = "TBXT-Het", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+GE_HetWT <- plotMarkers(seMarker = markerGE_HetWT.meso, name = "TBXT-Het", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+Peak_HetWT <- plotMarkers(seMarker = markerPeak_HetWT.meso, name = "TBXT-Het", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+
+GS_KOWT <- plotMarkers(seMarker = markerGS_KOWT.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+GE_KOWT <- plotMarkers(seMarker = markerGE_KOWT.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+Peak_KOWT <- plotMarkers(seMarker = markerPeak_KOWT.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+
+GS_KOHet <- plotMarkers(seMarker = markerGS_KOHet.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+GE_KOHet <- plotMarkers(seMarker = markerGE_KOHet.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+Peak_KOHet <- plotMarkers(seMarker = markerPeak_KOHet.meso, name = "TBXT-KO", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", plotAs = "MA")
+
+plotPDF(GS_HetWT, GS_KOWT, GS_KOHet,
+    name =paste(st, proj, "_MA_PairwiseMarkersGS.pdf", sep=""),
+    ArchRProj = archr.meso, 
+    addDOC = FALSE, width = 6, height = 6)
+
+plotPDF(GE_HetWT, GE_KOWT, GE_KOHet,
+    name =paste(st, proj, "_MA_PairwiseMarkersGE.pdf", sep=""),
+    ArchRProj = archr.meso, 
+    addDOC = FALSE, width = 6, height = 6)
+
+plotPDF(Peak_HetWT, Peak_KOWT, Peak_KOHet,
+    name =paste(st, proj, "_MA_PairwiseMarkersPeaks.pdf", sep=""),
+    ArchRProj = archr.meso, 
+    addDOC = FALSE, width = 6, height = 6)
+```
+
+Fig. S9C: Heatmap of differentially accessible peaks
+```{r}
+markersPeaks.meso <- getMarkerFeatures(
+    ArchRProj = archr.meso, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "Genotype",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon")
+
+markerListPeaks.meso <- getMarkers(markersPeaks.meso, cutOff = "FDR >= 0 & abs(Log2FC) >= 0")
+write.csv(markerListPeaks.meso, paste(wd, st, proj, "_markerListPeaks.csv", sep=""))
+
+markerListPeaks.meso.subset <- getMarkers(markersPeaks.meso, cutOff =  'FDR < 0.1 & abs(Log2FC)>=0.5') 
+write.csv(markerListPeaks.meso.subset, (paste(wd, st, proj,"_markerListPeaks_Log5_FDR1.csv", sep = "")))
+
+heatmapPeaks.meso <- plotMarkerHeatmap(seMarker = markersPeaks.meso, cutOff = "FDR <= 0.1 & abs(Log2FC) >= 0.5", transpose = TRUE) 
+
+plotPDF(heatmapPeaks.meso, name = paste(st, proj, "_Heatmap_getMarkersPeaks", sep=""), width = 6, height = 6, ArchRProj = archr.meso, addDOC = FALSE)
+```
+
+Fig. S9D: Accessibility Tracks
+```{r}
+markerGenes  <- c('WNT5A','RSPO3','LHX1','ZD7','BMPER','CDH12','CYP26A1','PRDM1')
+
+archr.meso <-getCoAccessibility(
+  ArchRProj = archr.meso,
+  corCutOff = 0.5,
+  resolution = 1,
+  returnLoops = TRUE)
+
+archr.meso <- addPeak2GeneLinks(
+    ArchRProj = archr.meso,
+    reducedDims = "HarmonyBS",
+    useMatrix = "GeneExpressionMatrix")
+
+p2g <- getPeak2GeneLinks(
+    ArchRProj = archr.meso,
+    corCutOff = 0.95,
+    resolution = 1,
+    returnLoops = TRUE)
+
+p <- plotBrowserTrack(
+    ArchRProj = archr.meso, 
+    groupBy = "Genotype", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getPeak2GeneLinks(archr.meso))
+
+
+plotPDF(p,  name = paste(st, proj, "_Tracks_byGenotype_withPeak2Gene.pdf", sep = ""), ArchRProj = archr.meso, addDOC = FALSE, width = 6, height = 6)
+```
+
+
+
+
+#==================================================
+#CellChat
+#==================================================
+
+Settings
+```{r}
+options(stringsAsFactors = FALSE)
+
+pal = c("(1) Extraembryonic-1" = "#A21D21", 
+          "(2) Extraembryonic-2" = "#4E1C4A", 
+          "(3) Extraembryonic-3" = "#14416D", 
+          "(4) EEM Progenitors" = "#056E3E", 
+          '(5) Epiblast' = "#669D42", 
+          '(6) Primitive Streak-1' = "#FFCE12",
+          '(7) Primitive Streak-2' = "#D38A5E",  
+          '(8) Primitive Streak-3' = "#AA5381",
+          '(9) Mesoderm' = "#7F294E",
+          '(10) Endoderm' = "#445968",
+          '(11) PGCLC' = "#03B7A6"
+          )
+```
+
+Subset Datasets by Genotype
+```{r}
+Idents(seurat) <- 'Genotype'
+seurat.wt<- subset(seurat, idents = 'WT')
+
+Idents(seurat) <- 'Genotype'
+seurat.het<- subset(seurat, idents = 'TBXT-Het')
+
+Idents(seurat) <- 'Genotype'
+seurat.ko<- subset(seurat, idents = 'TBXT-KO')
+```
+
+Fig. 4A: Barplot - Ranked comparison
+```{r}
+pdf(paste(st, proj, "_CellChat_BarPlot_NotStacked_WTHetKO", ".pdf", sep = ""), width=7, height=7)
+rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, comparison = c(1, 2,3))
+while (!is.null(dev.list()))  dev.off()
+```
+
+Fig. 4B-D, S10A-C: Process CellChat objects as for loop
+```{r}
+# Create the necessary folders if they don't exist
+setwd('~/CellChat')
+folders_to_create <- c("WT", "TBXT-Het", "TBXT-KO")
+  for (folder in folders_to_create) {
+    dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+  }
+  
+#Set objects
+wd_list <- c('~/WT','~/TBXT-Het','~/TBXT-KO' )
+proj_list <- c("_WT", "_TBXT-Het", "_TBXT-KO")
+suffix <- c('.wt', '.het','.ko')
+object_list <- c(seurat.wt, seurat.het, seurat.ko)
+cellchat_list <- c(cellchat.wt, cellchat.het, cellchat.ko)
+
+#Create CellChat Object
+for (i in 1:length(wd_list)) {
+  wd <- wd_list[i]
+  setwd(wd)
+  proj <- proj_list[i]
+  Idents(object_list[[i]]) <- "labeled_clusters"
+  cellchat <- createCellChat(object = object_list[[i]], group.by = "labeled_clusters", assay = "SCT")
+  CellChatDB.use <- CellChatDB.human
+  cellchat@DB <- CellChatDB.use
+  cellchat <- subsetData(cellchat)
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  cellchat <- projectData(cellchat, PPI.human)
+  cellchat <- computeCommunProb(cellchat)
+  cellchat <- filterCommunication(cellchat, min.cells = 10)
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  cellchat <- netAnalysis_computeCentrality(cellchat)
+  
+  assign(paste0("cellchat", suffix[i]), cellchat)
+}
+
+# Create the necessary folders if they don't exist
+for (i in 1:length(wd_list)) {
+  folders_to_create <- c("Circle", "L-R Interactions", "Violin", "Heatmap")
+  for (folder in folders_to_create) {
+    dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+  }
+
+#Fig. 4B, S10A-B: Circle Plot of All Pathways
+  setwd(paste0(wd, "/Circle"))
+  pathways.show.all <- cellchat@netP$pathways
+  levels(cellchat@idents)
+  vertex.receiver <- seq(1, 3)
+  
+  
+  for (j in 1:length(pathways.show.all)) {
+    netVisual(
+      cellchat,
+      signaling = pathways.show.all[j],
+      vertex.receiver = vertex.receiver,
+      layout = "circle",
+      out.format = "pdf",
+      color.use = pal
+    )
+    gg <-
+      netAnalysis_contribution(cellchat, signaling = pathways.show.all[j])
+    # Save ggsave() output in the "L-R Interactions" subfolder
+    ggsave(
+      path = file.path(paste(wd, "/L-R Interactions", sep = "")),
+      filename = paste0(st, proj, "_", pathways.show.all[j], "_L-R_contribution.pdf"),
+      plot = gg,
+      width = 3, height = 2, units = "in", dpi = 300)
+  }
+  
+  setwd(wd)
+  
+
+#Fig. S10C: Plot Gene Expression Violin Plots
+  for (j in 1:length(pathways.show.all)) {
+    gg <- plotGeneExpression(cellchat, signaling = pathways.show.all[j], color.use = pal, enriched.only = FALSE, same.y.lims = TRUE)
+    ggsave(path = "Violin/", filename = paste0(st, proj, '_', pathways.show.all[j], "_Violin.pdf"), plot = gg, width = 8, height = 6, units = 'in', dpi = 300)
+  }
+  
+#Fig. 4C: Identify Signaling roles Heatmap 
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+
+  for (j in 1:length(pathways.show.all)) {
+    pdf(paste0(st, proj, '_', pathways.show.all[j], "_Heatmap.pdf"), width = 8, height = 6)
+    gg <- netAnalysis_signalingRole_network(cellchat, signaling = pathways.show.all[j], width = 8, height = 2.5, font.size = 10, color.use = pal)
+    while (!is.null(dev.list()))
+      dev.off()
+  }
+  
+#Assign Cellchat Object
+  assign(paste0("cellchat", suffix), cellchat)
+}
+```
+
+Generate merged CellChat object
+```{r}
+object.list <- list('WT' = cellchat.wt, 'TBXT-Het' = cellchat.het, 'TBXT-KO' = cellchat.ko)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+cellchat
+ # 837 signaling genes.
+ # 22945 cells.
+```
+
+Fig. 4D: Bubble Plot (ncWNT, WNT, CADM, JAM)
+```{r}
+#Mesoderm sender
+pdf(paste(st, proj, "_CellChat_Bubble_WTHetKO_MesoSource_WNT-CADM-JAM", ".pdf", sep = ""),width=10, height=5)
+netVisual_bubble(cellchat, sources.use = 9, targets.use = c(0:11),  comparison = c(1,2,3), angle.x = 45, color.text.use=FALSE, signaling = c('ncWNT','WNT','CADM','JAM'), color.heatmap = "viridis")
+while (!is.null(dev.list()))  dev.off()
+
+#Mesoderm receiver
+pdf(paste(st, proj, "_CellChat_Bubble_WTHetKO_MesoReceiver_WNT-CADM-JAM", ".pdf", sep = ""),width=10, height=5)
+netVisual_bubble(cellchat, sources.use = c(0:11), targets.use = 9,  comparison = c(1,2,3), angle.x = 45, color.text.use=FALSE, signaling = c('ncWNT','WNT','CADM','JAM') , color.heatmap = "viridis")
+while (!is.null(dev.list()))  dev.off()
+```
+
+Save CellChat Objects
+```{r}
+save(cellchat.wt, cellchat.het, cellchat.ko, file = "CellChat_TBXT.RData")
+```
+
+
